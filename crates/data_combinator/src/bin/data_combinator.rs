@@ -140,8 +140,20 @@ fn ejecutar() -> AppResult<()> {
     let columnas = if elegido == opciones[0] {
         columnas_disp.clone()
     } else {
-        app_shell::menu_multiple("Columnas a incluir:", columnas_disp.clone())?
+        app_shell::menu_multiple(
+            "Columnas a incluir (Enter sin marcar = cancelar):",
+            columnas_disp.clone(),
+        )?
     };
+    // Antes: sin marcar ninguna columna, `columnas` quedaba vacío y
+    // `alinear_columnas`/`escritor.escribir` seguían de largo sin error —
+    // el resultado final era "¡Listo! 0 filas combinadas" con un archivo de
+    // salida vacío, en vez de cancelar como ya hace la selección de
+    // archivos (arriba) ante el mismo "no marqué nada".
+    if columnas.is_empty() {
+        app_shell::warn("No se marcó ninguna columna. Operación cancelada.");
+        return Ok(());
+    }
 
     let Some(formato) =
         app_shell::menu_seleccionar_nav("Formato de salida:", vec![Formato::Xlsx, Formato::Csv])?

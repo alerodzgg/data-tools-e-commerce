@@ -199,6 +199,37 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use app_shell::testing::{con_guion, Respuesta};
+
+    /// Índice del "Salir" en las opciones del menú principal (herramientas,
+    /// luego "Cambiar rutas", luego "Salir" — mismo cálculo que `ejecutar()`,
+    /// para que este test no se desincronice si el número de herramientas
+    /// cambia).
+    fn idx_salir() -> usize {
+        HERRAMIENTAS.len() + 1
+    }
+
+    #[test]
+    fn elegir_salir_en_el_menu_principal_termina_sin_error() {
+        // `con_guion`/`app_shell::testing` está documentado como pensado
+        // sobre todo para testear los binarios de cada herramienta, pero
+        // hasta ahora ningún `bin/*.rs` lo usaba — ni siquiera `hub`, cuya
+        // lógica entera ES ese bucle de menús encadenados.
+        let resultado = con_guion(vec![Respuesta::Elegir(idx_salir())], ejecutar);
+        assert!(
+            resultado.is_ok(),
+            "elegir 'Salir' debe terminar en Ok(()), no en error"
+        );
+    }
+
+    #[test]
+    fn cancelar_el_menu_principal_termina_sin_error_igual_que_salir() {
+        let resultado = con_guion(vec![Respuesta::Cancelar], ejecutar);
+        assert!(
+            resultado.is_ok(),
+            "cancelar (ESC) debe terminar en Ok(()), igual que 'Salir'"
+        );
+    }
 
     #[test]
     fn ruta_binario_construye_un_sibling_del_ejecutable_actual() {

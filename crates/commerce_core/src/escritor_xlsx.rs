@@ -304,7 +304,16 @@ impl EscritorXlsx {
     // ── internos: hojas y bases ──────────────────────────────────────────
 
     fn sanear(&self, nombre: &str) -> String {
-        let limpio: String = nombre.chars().filter(|c| !CARS_INVALIDOS.contains(c)).collect();
+        // Además de los caracteres prohibidos por Excel (`CARS_INVALIDOS`),
+        // borra los de control ilegales en XML 1.0 (0x00-0x1F): un nombre de
+        // hoja de un archivo de ORIGEN externo con un byte de control crudo
+        // (p. ej. `\u{0}`) generaba un `xl/workbook.xml` inválido — el mismo
+        // caso que `escapar_texto_xml` ya cubre para el CONTENIDO de las
+        // celdas, pero que acá, en el nombre de hoja, quedaba sin cubrir.
+        let limpio: String = nombre
+            .chars()
+            .filter(|c| !CARS_INVALIDOS.contains(c) && (*c as u32) >= 0x20)
+            .collect();
         let recortado = limpio.chars().take(31).collect::<String>();
         let recortado = recortado.trim();
         if recortado.is_empty() {
@@ -485,7 +494,11 @@ impl EscritorXlsx {
     }
 
     fn escapar_atributo(texto: &str) -> String {
-        texto
+        // Defensa en profundidad: `sanear()` ya borra los caracteres de
+        // control del nombre de hoja antes de llegar acá, pero esta función
+        // no depende de eso para ser segura por sí misma.
+        let sin_control: String = texto.chars().filter(|c| (*c as u32) >= 0x20).collect();
+        sin_control
             .replace('&', "&amp;")
             .replace('<', "&lt;")
             .replace('>', "&gt;")
@@ -863,6 +876,27 @@ mod tests {
         let nombre = &libro.sheet_names()[0];
         assert!(!nombre.chars().any(|c| CARS_INVALIDOS.contains(&c)));
         assert!(nombre.chars().count() <= 31);
+        Ok(())
+    }
+
+    #[test]
+    fn escritor_sanea_caracteres_de_control_del_nombre_de_hoja() -> CoreResult<()> {
+        // Antes: `sanear()`/`escapar_atributo` filtraban los caracteres
+        // prohibidos por Excel pero no los de control ilegales en XML 1.0
+        // (0x00-0x1F) — un nombre de hoja de un archivo de ORIGEN con un
+        // byte crudo de control generaba un `xl/workbook.xml` inválido. Este
+        // test verifica que el .xlsx resultante sigue siendo válido
+        // (se puede reabrir) y que el byte de control no sobrevive.
+        let tmp = tempfile::tempdir().unwrap();
+        let ruta = tmp.path().join("control.xlsx");
+        let mut escritor = EscritorXlsx::nuevo(&ruta, OpcionesEscritorXlsx::default())?;
+        escritor.escribir(&df!("A" => ["1"])?, Some("nombre\u{1}con\u{2}control"))?;
+        escritor.cerrar()?;
+
+        use calamine::{open_workbook_auto, Reader};
+        let libro = open_workbook_auto(&ruta).unwrap();
+        let nombre = &libro.sheet_names()[0];
+        assert!(!nombre.chars().any(|c| (c as u32) < 0x20));
         Ok(())
     }
 

@@ -25,6 +25,13 @@ pub fn preguntar_hojas_excluir(archivos: &[PathBuf], etiqueta: &str) -> FlujoRes
             continue;
         }
         let Ok(libro) = abrir_libro(archivo) else {
+            // Antes: se descartaba en silencio, a diferencia del resto del
+            // proyecto (`commerce_core::lector` ya avisa en el mismo caso
+            // para `columnas_union`/`total_filas`/`iter_hojas_xlsx`).
+            warn(&format!(
+                "No se pudo leer '{}' (archivo corrupto o no es un xlsx válido) — se ignora al calcular hojas a excluir.",
+                archivo.display()
+            ));
             continue;
         };
         let nombres = nombres_hojas_libro(&libro);
@@ -179,6 +186,30 @@ mod tests {
         assert_eq!(
             resultado, None,
             "excluir todas las hojas sin ningún CSV en la mezcla debe cancelar (None)"
+        );
+    }
+
+    #[test]
+    fn archivo_corrupto_se_ignora_sin_panico_y_no_bloquea_a_los_demas() {
+        // Antes: `let Ok(libro) = abrir_libro(archivo) else { continue };`
+        // descartaba en silencio, sin ningún `warn` — inconsistente con el
+        // resto del proyecto (`commerce_core::lector` sí avisa en el mismo
+        // caso). Este test verifica el comportamiento observable: el
+        // archivo corrupto no rompe el flujo y las hojas del archivo bueno
+        // siguen disponibles para excluir.
+        let tmp = tempfile::tempdir().unwrap();
+        let corrupto = tmp.path().join("corrupto.xlsx");
+        std::fs::write(&corrupto, b"esto no es un xlsx valido").unwrap();
+        let bueno = tmp.path().join("bueno.xlsx");
+        xlsx_con_hojas(&bueno, &["Hoja1", "Hoja2"]);
+
+        let resultado = con_guion(vec![Respuesta::Elegir(0)], || {
+            preguntar_hojas_excluir(&[corrupto, bueno], "").unwrap()
+        });
+        assert_eq!(
+            resultado,
+            Some(HashSet::new()),
+            "el corrupto se ignora, el bueno sigue procesándose normalmente"
         );
     }
 

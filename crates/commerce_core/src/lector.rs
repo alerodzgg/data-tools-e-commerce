@@ -411,6 +411,38 @@ mod tests {
     }
 
     #[test]
+    fn contar_filas_hoja_cuenta_filas_de_datos_sin_la_cabecera() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ruta = tmp.path().join("conteo.xlsx");
+        {
+            use rust_xlsxwriter::Workbook;
+            let mut wb = Workbook::new();
+            let hoja = wb.add_worksheet().set_name("Hoja1").unwrap();
+            hoja.write(0, 0, "A").unwrap();
+            for fila in 1..=3 {
+                hoja.write(fila, 0, fila as f64).unwrap();
+            }
+            wb.save(&ruta).unwrap();
+        }
+
+        let mut libro = abrir_libro(&ruta).unwrap();
+        assert_eq!(contar_filas_hoja(&mut libro, &ruta, "Hoja1").unwrap(), 3);
+    }
+
+    #[test]
+    fn contar_filas_hoja_ante_hoja_inexistente_devuelve_error_claro() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ruta = tmp.path().join("sin_esa_hoja.xlsx");
+        escribir_libro_prueba(&ruta);
+
+        let mut libro = abrir_libro(&ruta).unwrap();
+        let Err(error) = contar_filas_hoja(&mut libro, &ruta, "NoExiste") else {
+            panic!("se esperaba un error")
+        };
+        assert!(error.to_string().contains("NoExiste"));
+    }
+
+    #[test]
     fn abrir_libro_ante_archivo_corrupto_devuelve_error_claro() {
         let tmp = tempfile::tempdir().unwrap();
         let bueno = tmp.path().join("bueno.xlsx");

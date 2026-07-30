@@ -335,9 +335,6 @@ impl ImageEmbedder {
         let mut fallos = 0usize;
 
         for (tarea, img) in tareas.iter().zip(imagenes) {
-            filas_afectadas.insert(tarea.fila_excel);
-            columnas_afectadas.insert(tarea.col_destino);
-
             let Some(rgb) = img else {
                 ws.get_cell_mut((tarea.col_destino, tarea.fila_excel))
                     .set_value(self.cfg.texto_error.clone());
@@ -367,6 +364,13 @@ impl ImageEmbedder {
                 marker,
             );
             ws.add_image(xl_img);
+            // Recién ACÁ, no antes de comprobar `img`: antes se marcaba la
+            // fila/columna como "afectada" para toda tarea (incluidas las
+            // que fallaron la descarga o la codificación PNG), así que una
+            // celda con "Error" terminaba con el alto/ancho pensado para una
+            // imagen real que nunca se insertó.
+            filas_afectadas.insert(tarea.fila_excel);
+            columnas_afectadas.insert(tarea.col_destino);
             exitos += 1;
         }
 
@@ -597,6 +601,26 @@ mod tests {
         let (exitos, fallos) = embedder.insertar_imagenes(ws, &tareas, &imagenes);
         assert_eq!((exitos, fallos), (0, 1));
         assert_eq!(ws.get_value((3, 2)), cfg.texto_error);
+        // Antes: la fila/columna de una tarea FALLIDA se marcaba "afectada"
+        // igual que una exitosa, así que terminaba con el alto/ancho
+        // pensado para la imagen que nunca se insertó (126.0pt / ancho de
+        // 118px, ver `insertar_imagenes_incrusta_y_ajusta_dimensiones`).
+        // `get_cell_mut` ya crea una entrada de fila/columna con SU PROPIO
+        // valor por defecto como efecto secundario de tocar la celda, así
+        // que se compara contra el valor derivado de la imagen (no contra
+        // 0.0) para no depender del default interno de `umya-spreadsheet`.
+        let alto_de_imagen = px_a_puntos(cfg.alto_px);
+        let ancho_de_imagen = px_a_ancho_columna(cfg.ancho_px);
+        assert_ne!(
+            *ws.get_row_dimension(&2).unwrap().get_height(),
+            alto_de_imagen,
+            "una fila sin imagen insertada no debe tomar el alto pensado para una imagen"
+        );
+        assert_ne!(
+            *ws.get_column_dimension_by_number(&3).unwrap().get_width(),
+            ancho_de_imagen,
+            "una columna sin imagen insertada no debe tomar el ancho pensado para una imagen"
+        );
     }
 
     #[test]
