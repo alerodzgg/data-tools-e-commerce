@@ -17,7 +17,7 @@ pub mod rutas;
 pub mod testing;
 
 pub use diagnostico::mostrar_diagnostico_sistema;
-pub use dialogos::{abortar_si_reservadas, avisar_si_hay_reservadas, preguntar_hojas_excluir};
+pub use dialogos::{abortar_si_reservadas, avisar_si_hay_reservadas, listar_xlsx, preguntar_hojas_excluir};
 pub use mensajes::{error, info, mostrar_cabecera, mostrar_subcabecera, success, warn};
 pub use menus::{
     elegir_archivo, elegir_archivos, menu_confirmar, menu_multiple, menu_multiple_preseleccionado,

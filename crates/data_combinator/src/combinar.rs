@@ -63,11 +63,21 @@ fn error_generico(mensaje: String) -> CoreError {
     CoreError::Io(std::io::Error::other(mensaje))
 }
 
+/// Nombres de dispositivo DOS que Windows reserva a nivel de sistema de
+/// archivos (con o sin extensión: `nul.csv` sigue apuntando al dispositivo
+/// nulo, no a un archivo real). Comparación case-insensitive, sobre el
+/// nombre SIN extensión.
+const NOMBRES_RESERVADOS_WINDOWS: &[&str] = &[
+    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+    "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+];
+
 /// `nombre_salida` es texto libre tipeado por el usuario: si trajera un
 /// separador de ruta (`..\otro\archivo`, `/etc/passwd`) o fuera una ruta
 /// absoluta (`C:\ruta\ajena\x`), `Path::join` lo tomaría tal cual y se
 /// escribiría FUERA de `ruta_salida` — acá se lo rechaza en vez de escribir
-/// en cualquier ubicación con los permisos del usuario.
+/// en cualquier ubicación con los permisos del usuario. También rechaza los
+/// nombres de [`NOMBRES_RESERVADOS_WINDOWS`].
 fn validar_nombre_salida(nombre: &str) -> CoreResult<()> {
     let es_solo_un_nombre = Path::new(nombre)
         .file_name()
@@ -76,6 +86,19 @@ fn validar_nombre_salida(nombre: &str) -> CoreResult<()> {
         return Err(error_generico(format!(
             "El nombre de salida '{nombre}' no es válido: no puede contener separadores de ruta \
              ni ser '.'/'..'/una ruta absoluta. Usa solo un nombre de archivo."
+        )));
+    }
+    let base = Path::new(nombre)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(nombre);
+    if NOMBRES_RESERVADOS_WINDOWS
+        .iter()
+        .any(|r| base.eq_ignore_ascii_case(r))
+    {
+        return Err(error_generico(format!(
+            "El nombre de salida '{nombre}' no es válido: es un nombre de dispositivo reservado \
+             de Windows (CON, PRN, AUX, NUL, COM1-9, LPT1-9), con o sin extensión. Elegí otro nombre."
         )));
     }
     Ok(())
@@ -162,9 +185,16 @@ struct EntradaFusion {
     origen: usize,
 }
 
+// `eq` definido en términos de `cmp` (no comparando solo `clave`, que ignora
+// `origen`): la versión anterior podía dar `cmp() != Equal` (por el
+// desempate de `origen`) y a la vez `eq() == true` para dos entradas de
+// distinto origen — el mismo defecto de contrato Eq/Ord que ya se corrigió
+// en `ClaveExcel` (ver `orden.rs`). Hoy es inofensivo porque `BinaryHeap`
+// solo usa `Ord`, pero es una trampa latente para cualquier uso futuro de
+// `==`/`dedup()`/`HashSet` sobre `EntradaFusion`.
 impl PartialEq for EntradaFusion {
     fn eq(&self, other: &Self) -> bool {
-        self.clave == other.clave
+        self.cmp(other) == std::cmp::Ordering::Equal
     }
 }
 impl Eq for EntradaFusion {}
@@ -461,6 +491,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn entrada_fusion_eq_consistente_con_ord_pese_al_desempate_por_origen() {
+        // Antes: `eq` comparaba solo `clave`, ignorando `origen`, mientras
+        // `cmp` sí lo usa como desempate — dos entradas con la misma clave
+        // pero distinto origen daban `cmp() != Equal` y `eq() == true` a la
+        // vez, el mismo defecto de contrato Eq/Ord ya corregido en
+        // `ClaveExcel` (`orden.rs`).
+        let a = EntradaFusion {
+            clave: ClaveExcel::nueva("Honda", true),
+            fila: vec![],
+            origen: 0,
+        };
+        let b = EntradaFusion {
+            clave: ClaveExcel::nueva("Honda", true),
+            fila: vec![],
+            origen: 1,
+        };
+        assert_ne!(
+            a.cmp(&b),
+            std::cmp::Ordering::Equal,
+            "el desempate por origen debe distinguirlas"
+        );
+        assert!(a != b, "eq debe ser consistente con cmp != Equal");
+    }
+
+    #[test]
     fn formato_display_es_distinto_entre_variantes() {
         // Antes, el binario elegía `Formato` re-derivándolo de un
         // `starts_with("Excel")` sobre el texto mostrado en el menú: si esta
@@ -478,6 +533,27 @@ mod tests {
     fn nombre_salida_simple_es_valido() {
         assert!(validar_nombre_salida("combinado").is_ok());
         assert!(validar_nombre_salida("combinado_2024").is_ok());
+    }
+
+    #[test]
+    fn nombre_salida_rechaza_nombres_de_dispositivo_reservados_de_windows() {
+        // Antes: solo se validaban separadores de ruta/'.'/'..'/rutas
+        // absolutas — "nul" pasaba la validación como "solo un nombre de
+        // archivo" y `File::create` habría apuntado al dispositivo nulo real
+        // en vez de crear un archivo, con los datos descartados en silencio.
+        assert!(validar_nombre_salida("nul").is_err());
+        assert!(validar_nombre_salida("NUL").is_err());
+        assert!(validar_nombre_salida("con").is_err());
+        assert!(validar_nombre_salida("COM1").is_err());
+        assert!(validar_nombre_salida("lpt3").is_err());
+        assert!(
+            validar_nombre_salida("nul.csv").is_err(),
+            "reservado con o sin extensión"
+        );
+        // No debe dar falsos positivos: nombres que solo CONTIENEN uno de
+        // estos como substring no son el dispositivo en sí.
+        assert!(validar_nombre_salida("nulificado").is_ok());
+        assert!(validar_nombre_salida("concatenado").is_ok());
     }
 
     #[test]

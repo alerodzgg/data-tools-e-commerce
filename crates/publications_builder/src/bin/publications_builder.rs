@@ -16,27 +16,9 @@ enum AppError {
 
 type AppResult<T> = Result<T, AppError>;
 
-fn listar_xlsx(entrada: &Path) -> Vec<PathBuf> {
-    let mut archivos: Vec<PathBuf> = std::fs::read_dir(entrada)
-        .into_iter()
-        .flatten()
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| {
-            p.is_file()
-                && p.extension()
-                    .and_then(|e| e.to_str())
-                    .map(|e| e.eq_ignore_ascii_case("xlsx"))
-                    .unwrap_or(false)
-        })
-        .collect();
-    archivos.sort();
-    archivos
-}
-
 fn seleccionar_archivo() -> AppResult<Option<PathBuf>> {
     let entrada = app_shell::ruta_entrada();
-    let archivos = listar_xlsx(&entrada);
+    let archivos = app_shell::listar_xlsx(&entrada).unwrap_or_default();
     if archivos.is_empty() {
         app_shell::error(&format!(
             "No se encontraron archivos .xlsx en '{}'.",

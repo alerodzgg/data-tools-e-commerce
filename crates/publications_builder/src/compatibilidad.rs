@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::hash::{Hash, Hasher};
+use std::hash::BuildHasher;
 use std::ops::Not;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
@@ -329,6 +329,15 @@ struct AcumuladorProcesadas {
     archivos_part: Vec<Vec<PathBuf>>,
     contador_archivos: Vec<usize>,
     buffer_filas: usize,
+    // Semilla aleatoria por CORRIDA (no por valor: todos los valores de esta
+    // misma corrida deben hashear de forma CONSISTENTE entre sí para caer
+    // siempre en la misma partición). `DefaultHasher::new()` a secas usa
+    // claves fijas (SipHash con clave (0,0)) — un archivo de entrada
+    // diseñado a propósito podría forzar que todo caiga en una sola
+    // partición, anulando el acotado de memoria que este particionado
+    // existe para garantizar. `RandomState::new()` sortea una semilla nueva
+    // una sola vez acá; `build_hasher()` la reusa para cada valor.
+    hasher_state: std::collections::hash_map::RandomState,
 }
 
 impl AcumuladorProcesadas {
@@ -340,6 +349,7 @@ impl AcumuladorProcesadas {
             archivos_part: vec![Vec::new(); n_part],
             contador_archivos: vec![0; n_part],
             buffer_filas: 0,
+            hasher_state: std::collections::hash_map::RandomState::new(),
         })
     }
 
@@ -351,9 +361,7 @@ impl AcumuladorProcesadas {
         let combinada = columna_texto(&df, "Combinada")?;
         let mut por_particion: Vec<Vec<usize>> = vec![Vec::new(); self.n_part];
         for (i, v) in combinada.iter().enumerate() {
-            let mut hasher = std::collections::hash_map::DefaultHasher::new();
-            v.hash(&mut hasher);
-            let pid = (hasher.finish() % self.n_part as u64) as usize;
+            let pid = (self.hasher_state.hash_one(v) % self.n_part as u64) as usize;
             por_particion[pid].push(i);
         }
         for (pid, indices) in por_particion.into_iter().enumerate() {
@@ -620,22 +628,29 @@ fn es_hoja_de_compatibilidad(hoja: &str) -> bool {
         .is_some_and(|resto| !resto.is_empty() && resto.chars().all(|c| c.is_ascii_digit()))
 }
 
+/// Agrupa la config/recursos de `iter_bloques_compat` que viajan juntos de
+/// una sola vez — mismo criterio que [`ContextoUnido`], que ya resolvió esta
+/// misma señal (`clippy::too_many_arguments`) para `procesar_unido`/
+/// `despachar_unido`.
+struct ContextoIterCompat<'a> {
+    archivo_entrada: &'a Path,
+    sheet_names: &'a [String],
+    modo: ModoCompatibilidad,
+    borrar_linea: bool,
+    chunk_size: usize,
+    libro: &'a mut commerce_core::LibroXlsx,
+}
+
 /// Itera las hojas de compatibilidad (Hoja2, Hoja3…) por BLOQUES ya
 /// limpios, deduplicados dentro de cada bloque. Solo una hoja vive en RAM a
 /// la vez: las compatibilidades pueden sumar decenas de millones de filas
 /// repartidas en muchas hojas sin saturar la memoria.
-#[allow(clippy::too_many_arguments)]
 fn iter_bloques_compat(
-    archivo_entrada: &Path,
-    sheet_names: &[String],
-    modo: ModoCompatibilidad,
-    borrar_linea: bool,
-    chunk_size: usize,
-    libro: &mut commerce_core::LibroXlsx,
+    ctx: &mut ContextoIterCompat,
     avisar: &mut (impl FnMut(&str) + ?Sized),
     mut on_chunk: impl FnMut(DataFrame) -> CoreResult<()>,
 ) -> CoreResult<()> {
-    for hoja in sheet_names {
+    for hoja in ctx.sheet_names {
         if hoja.trim().eq_ignore_ascii_case("hoja1") {
             continue;
         }
@@ -645,7 +660,7 @@ fn iter_bloques_compat(
             ));
             continue;
         }
-        let df_compat = match commerce_core::leer_hoja_por_nombre(libro, archivo_entrada, hoja) {
+        let df_compat = match commerce_core::leer_hoja_por_nombre(ctx.libro, ctx.archivo_entrada, hoja) {
             Ok(df) => df,
             Err(error) => {
                 avisar(&format!("Error leyendo compatibilidad '{hoja}': {error}"));
@@ -656,11 +671,11 @@ fn iter_bloques_compat(
             df_compat.get_column_names().iter().map(|s| s.as_str()),
             &format!("La hoja '{hoja}'"),
         )?;
-        let df_compat = limpiar_hoja_compat(&df_compat, modo, borrar_linea)?;
+        let df_compat = limpiar_hoja_compat(&df_compat, ctx.modo, ctx.borrar_linea)?;
         let n = df_compat.height();
         let mut inicio = 0;
         while inicio < n {
-            let tomar = chunk_size.min(n - inicio);
+            let tomar = ctx.chunk_size.min(n - inicio);
             let bloque = df_compat.slice(inicio as i64, tomar);
             let bloque = bloque.unique::<(), ()>(None, UniqueKeepStrategy::Any, None)?;
             on_chunk(bloque)?;
@@ -731,12 +746,14 @@ pub fn ejecutar_procesamiento_compatibilidad(
 
         if tiene_url {
             iter_bloques_compat(
-                archivo_entrada,
-                &sheet_names,
-                modo,
-                borrar_linea,
-                CHUNK_SIZE,
-                &mut libro,
+                &mut ContextoIterCompat {
+                    archivo_entrada,
+                    sheet_names: &sheet_names,
+                    modo,
+                    borrar_linea,
+                    chunk_size: CHUNK_SIZE,
+                    libro: &mut libro,
+                },
                 &mut *avisar,
                 |bloque| {
                     let filas = bloque.height() as u64;

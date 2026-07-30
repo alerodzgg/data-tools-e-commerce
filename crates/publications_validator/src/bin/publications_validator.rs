@@ -1,8 +1,6 @@
 //! Binario interactivo de `publications_validator`: elegir archivo, confirmar
 //! OEM, procesar.
 
-use std::path::PathBuf;
-
 use app_shell::FlujoError;
 use publications_validator::Procesador;
 
@@ -22,18 +20,7 @@ fn ejecutar() -> Result<(), AppError> {
     // Solo .xlsx: el .xls antiguo no lo abre este lector (elegirlo abortaba
     // con error); si aparece uno, convertirlo a .xlsx antes de procesar.
     let entrada = app_shell::ruta_entrada();
-    let mut archivos: Vec<PathBuf> = std::fs::read_dir(&entrada)?
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| {
-            p.is_file()
-                && p.extension()
-                    .and_then(|e| e.to_str())
-                    .map(|e| e.eq_ignore_ascii_case("xlsx"))
-                    .unwrap_or(false)
-        })
-        .collect();
-    archivos.sort();
+    let archivos = app_shell::listar_xlsx(&entrada)?;
     if archivos.is_empty() {
         app_shell::error(&format!(
             "No se encontraron archivos .xlsx en '{}'.",

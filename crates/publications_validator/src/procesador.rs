@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::hash::{Hash, Hasher};
+use std::hash::BuildHasher;
 use std::ops::Not;
 use std::path::PathBuf;
 
@@ -137,6 +137,15 @@ fn escribir_dedup(
     Ok(())
 }
 
+/// Tope de entradas del caché de `Clasificador`: sin esto, un archivo
+/// patológico con una cantidad enorme de títulos DISTINTOS (no el caso
+/// normal, donde se repiten mucho entre variantes) hacía crecer el caché sin
+/// límite, encima del resto del pipeline que sí procesa en streaming/
+/// particionado acotado. Pasado el tope, se sigue clasificando correctamente
+/// (`clasificar_uno` es pura y determinista) — solo se deja de cachear, así
+/// que un título repetido después del tope se recalcula en vez de reusarse.
+const MAX_CACHE_CLASIFICACION: usize = 200_000;
+
 /// Cachea la clasificación de cada título DISTINTO (factorización: los
 /// títulos se repiten muchísimo entre variantes de un mismo producto),
 /// separa un chunk en (válidas, eliminadas) y aplica OEM por fila.
@@ -144,6 +153,7 @@ struct Clasificador {
     patrones: Patrones,
     marcas_lower: HashSet<String>,
     cache: HashMap<String, (String, Option<String>)>,
+    limite_cache: usize,
 }
 
 impl Clasificador {
@@ -153,6 +163,7 @@ impl Clasificador {
             patrones: Patrones::compilar(),
             marcas_lower: palabras_borradas_lower(&palabras),
             cache: HashMap::new(),
+            limite_cache: MAX_CACHE_CLASIFICACION,
         }
     }
 
@@ -195,19 +206,21 @@ impl Clasificador {
             chunk = aplicar_oem3(&chunk)?;
         }
 
-        for t in &titulos {
-            if !self.cache.contains_key(t) {
-                let resultado = clasificar_uno(t, &self.patrones, &self.marcas_lower);
-                self.cache.insert(t.clone(), resultado);
-            }
-        }
-
         let mut salidas: Vec<String> = Vec::with_capacity(titulos.len());
         let mut motivos: Vec<Option<String>> = Vec::with_capacity(titulos.len());
         for t in &titulos {
-            let (salida, motivo) = self.cache.get(t).unwrap();
-            salidas.push(salida.clone());
-            motivos.push(motivo.clone());
+            let (salida, motivo) = match self.cache.get(t) {
+                Some(par) => par.clone(),
+                None => {
+                    let resultado = clasificar_uno(t, &self.patrones, &self.marcas_lower);
+                    if self.cache.len() < self.limite_cache {
+                        self.cache.insert(t.clone(), resultado.clone());
+                    }
+                    resultado
+                }
+            };
+            salidas.push(salida);
+            motivos.push(motivo);
         }
 
         chunk.with_column(Column::new(COL_TRADUCIDO.into(), salidas))?;
@@ -351,6 +364,13 @@ impl Procesador {
         let mut buffer_part: Vec<Vec<DataFrame>> = vec![Vec::new(); n_part];
         let mut buffer_filas: usize = 0;
         let mut contador_archivos = vec![0usize; n_part];
+        // Semilla aleatoria por CORRIDA, no por valor: todos los títulos de
+        // esta misma corrida deben hashear consistentemente entre sí para
+        // caer siempre en la misma partición. `DefaultHasher::new()` a
+        // secas usa claves fijas — un archivo diseñado a propósito podría
+        // forzar que todo caiga en una sola partición, anulando el acotado
+        // de memoria que este particionado existe para garantizar.
+        let hasher_state = std::collections::hash_map::RandomState::new();
 
         let mut flush = |buffer_part: &mut Vec<Vec<DataFrame>>,
                          archivos_part: &mut Vec<Vec<PathBuf>>|
@@ -380,9 +400,7 @@ impl Procesador {
             let traducido = columna_texto(&validas, COL_TRADUCIDO)?;
             let mut por_particion: Vec<Vec<usize>> = vec![Vec::new(); n_part];
             for (i, t) in traducido.iter().enumerate() {
-                let mut hasher = std::collections::hash_map::DefaultHasher::new();
-                t.hash(&mut hasher);
-                let pid = (hasher.finish() % n_part as u64) as usize;
+                let pid = (hasher_state.hash_one(t) % n_part as u64) as usize;
                 por_particion[pid].push(i);
             }
             for (pid, indices) in por_particion.into_iter().enumerate() {
@@ -716,6 +734,47 @@ mod tests {
         assert!(
             avisos.iter().any(|m| m.contains("Precio2")),
             "debe avisar que no se pudo deduplicar por falta de 'Precio2': {avisos:?}"
+        );
+    }
+
+    #[test]
+    fn cache_de_clasificacion_no_crece_mas_alla_del_limite_pero_sigue_clasificando_todo() {
+        // Antes: el caché de `Clasificador` crecía sin ningún tope con el
+        // número de títulos DISTINTOS de toda la corrida — un archivo
+        // patológico con muchísimos títulos únicos crecía en memoria sin
+        // límite. `limite_cache` se fija bajo (2) para poder ejercitar el
+        // camino "caché lleno" sin procesar cientos de miles de títulos.
+        let palabras = palabras_borradas();
+        let mut clasificador = Clasificador {
+            patrones: Patrones::compilar(),
+            marcas_lower: palabras_borradas_lower(&palabras),
+            cache: HashMap::new(),
+            limite_cache: 2,
+        };
+
+        let df = df! {
+            COL_TRADUCIDO => [
+                "Disco Freno Delantero Honda Civic",
+                "Filtro Aire Motor Ford Focus",
+                "Bomba Agua Toyota Corolla",
+                "Disco Freno Delantero Honda Civic",
+            ],
+        }
+        .unwrap();
+
+        let (validas, eliminadas) = clasificador
+            .procesar_chunk(&df, "Hoja1", false)
+            .expect("no debe fallar aunque el caché no alcance para todos los títulos");
+
+        assert!(
+            clasificador.cache.len() <= 2,
+            "el caché nunca debe superar el límite configurado, tiene {}",
+            clasificador.cache.len()
+        );
+        assert_eq!(
+            validas.height() + eliminadas.height(),
+            4,
+            "ninguna fila se pierde ni queda sin clasificar aunque el caché esté lleno"
         );
     }
 }

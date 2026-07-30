@@ -94,6 +94,20 @@ fn es_xlsx(archivo: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// Lista los archivos `.xlsx` de `carpeta`, ordenados alfabéticamente.
+/// `Err` solo si la carpeta en sí no se pudo LEER (no existe, sin permisos);
+/// antes este mismo filtro estaba duplicado, casi idéntico, en los binarios
+/// de `publications_builder` y `publications_validator`.
+pub fn listar_xlsx(carpeta: &Path) -> std::io::Result<Vec<PathBuf>> {
+    let mut archivos: Vec<PathBuf> = std::fs::read_dir(carpeta)?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.is_file() && es_xlsx(p))
+        .collect();
+    archivos.sort();
+    Ok(archivos)
+}
+
 /// `True` (y avisa) si `columnas` trae nombres reservados por la
 /// herramienta: el flujo debe cancelarse en vez de corromperlos en silencio.
 pub fn abortar_si_reservadas(columnas: &[String], reservadas: &[&str]) -> bool {
@@ -117,6 +131,32 @@ pub fn avisar_si_hay_reservadas(chocan: &[String]) -> bool {
         ));
     }
     !chocan.is_empty()
+}
+
+#[cfg(test)]
+mod listar_xlsx_tests {
+    use super::listar_xlsx;
+
+    #[test]
+    fn lista_solo_xlsx_ordenados_e_ignora_mayusculas_de_extension_y_otros_formatos() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("b.xlsx"), b"").unwrap();
+        std::fs::write(tmp.path().join("a.XLSX"), b"").unwrap();
+        std::fs::write(tmp.path().join("c.csv"), b"").unwrap();
+        std::fs::create_dir(tmp.path().join("d.xlsx")).unwrap(); // carpeta, no archivo
+
+        let archivos = listar_xlsx(tmp.path()).unwrap();
+        let nombres: Vec<String> = archivos
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(nombres, vec!["a.XLSX".to_string(), "b.xlsx".to_string()]);
+    }
+
+    #[test]
+    fn carpeta_inexistente_devuelve_error() {
+        assert!(listar_xlsx(std::path::Path::new("/carpeta/que/no/existe/en/serio")).is_err());
+    }
 }
 
 #[cfg(test)]
