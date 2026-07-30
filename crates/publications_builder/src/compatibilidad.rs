@@ -695,12 +695,21 @@ pub fn ejecutar_procesamiento_compatibilidad(
     let mut libro = commerce_core::abrir_libro(archivo_entrada)?;
     let sheet_names = commerce_core::nombres_hojas_libro(&libro);
 
-    if !sheet_names.iter().any(|h| h == "Hoja1") {
+    // Comparación case/espacio-insensible, igual que `iter_bloques_compat`
+    // hace para Hoja2/Hoja3... (`es_hoja_de_compatibilidad`): antes esta
+    // búsqueda comparaba contra el literal exacto `"Hoja1"`, así que un
+    // archivo con la hoja principal llamada `"hoja1"` (minúscula) hacía
+    // fallar esta condición y el modo Compatibilidades/Comprimidas no
+    // procesaba nada, sin ninguna pista real de la causa.
+    let Some(nombre_hoja1) = sheet_names
+        .iter()
+        .find(|h| h.trim().eq_ignore_ascii_case("hoja1"))
+    else {
         avisar("No se encontró la 'Hoja1' en el archivo.");
         return Ok(false);
-    }
+    };
 
-    let df_hoja1_crudo = commerce_core::leer_hoja_por_nombre(&mut libro, archivo_entrada, "Hoja1")?;
+    let df_hoja1_crudo = commerce_core::leer_hoja_por_nombre(&mut libro, archivo_entrada, nombre_hoja1)?;
     verificar_columnas_reservadas(
         df_hoja1_crudo.get_column_names().iter().map(|s| s.as_str()),
         "'Hoja1'",
@@ -1252,6 +1261,48 @@ mod tests {
             1,
             "'hoja2' en minúscula debe tratarse igual que 'Hoja2'"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn hoja1_en_minuscula_se_procesa_igual() -> CoreResult<()> {
+        // Antes: `sheet_names.iter().any(|h| h == "Hoja1")` y la lectura
+        // posterior comparaban con el literal exacto "Hoja1" — un archivo
+        // con la hoja principal llamada "hoja1" (minúscula) hacía fallar la
+        // condición y el modo Compatibilidades/Comprimidas no procesaba
+        // nada, con el aviso engañoso "No se encontró la 'Hoja1'" pese a que
+        // el archivo sí la tenía (solo que en minúscula).
+        let tmp = tempfile::tempdir().unwrap();
+        let entrada = tmp.path().join("hoja1_minuscula.xlsx");
+        escribir_libro(
+            &entrada,
+            &[(
+                "hoja1",
+                vec![
+                    vec!["web-scraper-start-url", "Precio", "Titulo", "Tienda"],
+                    vec!["https://e.com/itm/111", "$50.00", "Product X", "TiendaY"],
+                ],
+            )],
+        );
+
+        let salida = tmp.path().join("hoja1_minuscula_out.xlsx");
+        let hizo_algo = ejecutar_procesamiento_compatibilidad(
+            &entrada,
+            &salida,
+            ModoCompatibilidad::Repetidas,
+            false,
+            false,
+            |_| {},
+            |_| {},
+        )?;
+
+        assert!(hizo_algo, "'hoja1' en minúscula debe tratarse igual que 'Hoja1'");
+        let hojas = leer_hojas(&salida);
+        // Sin ninguna hoja de compatibilidad (Hoja2, Hoja3…) que matchee,
+        // la fila de Hoja1 va a "No_Procesadas" — lo relevante acá es que
+        // `hizo_algo` sea `true` y que exista una salida real, no `false`
+        // con el aviso engañoso de "no se encontró Hoja1".
+        assert_eq!(hojas["No_Procesadas"].height(), 1);
         Ok(())
     }
 

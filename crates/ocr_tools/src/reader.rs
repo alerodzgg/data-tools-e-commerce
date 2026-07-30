@@ -31,6 +31,20 @@ const ADD_MARGIN: f32 = 0.1;
 const MIN_SIZE: f32 = 20.0;
 const MODEL_HEIGHT: u32 = 64;
 
+/// Ancho de "balde" máximo tolerado antes de reconocer una caja (ver
+/// `recognize_one`). `MIN_SIZE` ya filtra cajas demasiado CHICAS (lado mayor
+/// <= 20px), pero no pone piso al lado MENOR: una caja casi degenerada (p.
+/// ej. 1-2px de ancho por cientos de píxeles de alto) da un `ratio`
+/// desproporcionado, y `bucket_width` lo traduce directo en el tamaño del
+/// tensor de `align_collate_normalize` y en el largo de la secuencia que
+/// procesa el reconocedor — sin este techo, una sola imagen con geometría
+/// adversarial/ruidosa (imágenes de terceros, no confiables) puede disparar
+/// una asignación e inferencia desproporcionadas y estancar la única cola de
+/// OCR compartida por todo el archivo (`async_processor`). 32 baldes (2048px
+/// de ancho normalizado a `MODEL_HEIGHT`) es generoso para cualquier línea
+/// de texto real.
+const MAX_BUCKET_WIDTH: u32 = MODEL_HEIGHT * 32;
+
 /// Un fragmento de texto reconocido, con su caja (4 esquinas) y confianza.
 #[derive(Debug, Clone)]
 pub struct OcrResult {
@@ -141,6 +155,9 @@ impl Reader {
             return Ok(None);
         };
         let bucket = bucket_width(ratio, MODEL_HEIGHT);
+        if bucket > MAX_BUCKET_WIDTH {
+            return Ok(None);
+        }
         let tensor = align_collate_normalize(&resized, MODEL_HEIGHT, bucket);
 
         let mut probs = self.recognizer.forward(tensor)?;
@@ -177,4 +194,38 @@ fn swapped_luma_gray(rgb: &RgbImage) -> GrayImage {
         let v = 0.299 * b + 0.587 * g + 0.114 * r;
         Luma([v.round().clamp(0.0, 255.0) as u8])
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn modelo(nombre: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("models")
+            .join(nombre)
+    }
+
+    #[test]
+    fn recognize_one_descarta_una_caja_con_relacion_de_aspecto_extrema() {
+        // Antes: sin `MAX_BUCKET_WIDTH`, una caja casi degenerada (acá: 4px
+        // de ancho por 2000px de alto, alcanzable desde un detector
+        // corriendo sobre una imagen de terceros no confiable) producía un
+        // `bucket_width` de miles de columnas y un tensor/inferencia
+        // proporcionalmente desproporcionados. Se prueba `recognize_one`
+        // directo (sin pasar por `detect`) para no depender de que el
+        // detector real produzca esa geometría exacta.
+        let mut reader = Reader::new(modelo("craft_detector.onnx"), modelo("recognizer_latin_g2.onnx"))
+            .expect("carga reader");
+        let gray = GrayImage::from_pixel(4, 2000, Luma([128u8]));
+        let hbox: HorizontalBox = [0.0, 4.0, 0.0, 2000.0];
+        let resultado = reader
+            .recognize_one(&gray, RecogBox::Horizontal(hbox))
+            .expect("no debe fallar, solo descartar la caja");
+        assert!(
+            resultado.is_none(),
+            "una caja con relación de aspecto extrema debe descartarse, no reconocerse"
+        );
+    }
 }

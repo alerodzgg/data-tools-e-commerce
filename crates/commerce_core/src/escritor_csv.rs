@@ -32,6 +32,21 @@ fn dispara_inyeccion_formula(valor: &str) -> bool {
 /// esta mitigación (documentado así por OWASP), aceptable porque estos CSV
 /// son salidas pensadas para abrirse en una hoja de cálculo, no para
 /// reingresar como entrada de otra herramienta de este mismo workspace.
+/// Antepone una comilla simple a un NOMBRE de columna que dispara inyección
+/// de fórmulas (ver [`dispara_inyeccion_formula`]). Sin esto, una cabecera de
+/// ORIGEN maliciosa/corrupta (p. ej. una celda de cabecera de un xlsx externo
+/// con el texto `=cmd|'/C calc'!A1`, que termina como nombre de columna acá)
+/// se escribía tal cual en la fila de cabecera del CSV de salida, sin la
+/// misma protección que ya tienen los VALORES vía `neutralizar_formulas` —
+/// era la mitad de la asimetría con `EscritorXlsx` que quedó sin cerrar.
+fn nombre_columna_saneado(nombre: &str) -> String {
+    if dispara_inyeccion_formula(nombre) {
+        format!("'{nombre}")
+    } else {
+        nombre.to_string()
+    }
+}
+
 fn neutralizar_formulas(df: &mut DataFrame) -> CoreResult<()> {
     let nombres: Vec<String> = df.get_column_names().iter().map(|s| s.to_string()).collect();
     for nombre in nombres {
@@ -133,6 +148,19 @@ impl EscritorCsv {
         }
         let mut df = self.alinear(df)?;
         neutralizar_formulas(&mut df)?;
+        if self.primero {
+            // Renombrar acá (recién ahora que `alinear()` ya hizo su
+            // matching por nombre exacto contra `self.columnas`) para no
+            // romper la alineación de bloques futuros: solo afecta la fila
+            // de cabecera que se escribe a continuación.
+            let nombres: Vec<String> = df.get_column_names().iter().map(|s| s.to_string()).collect();
+            for nombre in nombres {
+                let saneado = nombre_columna_saneado(&nombre);
+                if saneado != nombre {
+                    df.rename(&nombre, saneado.into())?;
+                }
+            }
+        }
         CsvWriter::new(&mut self.fh)
             .include_header(self.primero)
             .finish(&mut df)?;
@@ -168,7 +196,12 @@ impl EscritorCsv {
             let columnas: Vec<Column> = self
                 .columnas
                 .iter()
-                .map(|c| Column::new(PlSmallStr::from(c.as_str()), Vec::<Option<&str>>::new()))
+                .map(|c| {
+                    Column::new(
+                        PlSmallStr::from(nombre_columna_saneado(c).as_str()),
+                        Vec::<Option<&str>>::new(),
+                    )
+                })
                 .collect();
             let mut vacio = DataFrame::new_infer_height(columnas)?;
             CsvWriter::new(&mut self.fh)
@@ -275,6 +308,37 @@ mod tests {
             leido.trim(),
             "A\n'=cmd|'/C calc'!A1\n'+1+1\n'-5-PACK\n'@Home\nProducto normal"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn escribir_antepone_comilla_a_un_nombre_de_columna_que_dispara_formula() -> CoreResult<()> {
+        // Antes: `neutralizar_formulas` protegía los VALORES pero nunca los
+        // NOMBRES de columna. Un nombre de columna malicioso (p. ej. venido
+        // de una celda de cabecera de un xlsx externo) se escribía tal cual
+        // en la fila de cabecera del CSV, sin comilla protectora.
+        let tmp = tempfile::tempdir().unwrap();
+        let ruta = tmp.path().join("cabecera_peligrosa.csv");
+        {
+            let mut escritor = EscritorCsv::nuevo(&ruta, vec!["=cmd|'/C calc'!A1".into(), "B".into()])?;
+            escritor.escribir(&df!("=cmd|'/C calc'!A1" => ["1"], "B" => ["x"])?, None)?;
+            escritor.cerrar()?;
+        }
+        let leido = std::fs::read_to_string(&ruta)?;
+        assert_eq!(leido.trim(), "'=cmd|'/C calc'!A1,B\n1,x");
+        Ok(())
+    }
+
+    #[test]
+    fn cabecera_peligrosa_tambien_se_sanea_cuando_no_hay_datos() -> CoreResult<()> {
+        let tmp = tempfile::tempdir().unwrap();
+        let ruta = tmp.path().join("cabecera_peligrosa_vacio.csv");
+        {
+            let mut escritor = EscritorCsv::nuevo(&ruta, vec!["=peligroso".into(), "B".into()])?;
+            escritor.cerrar()?;
+        }
+        let leido = std::fs::read_to_string(&ruta)?;
+        assert_eq!(leido.trim(), "'=peligroso,B");
         Ok(())
     }
 
