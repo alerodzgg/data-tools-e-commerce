@@ -1,0 +1,11 @@
+# Build de Rust/Cargo (nunca debe entrar al repo)
+/target/
+**/target/
+
+# Paquete .deb ya armado (se regenera con `cargo deb -p hub`, no es fuente)
+/dist/
+
+# Salidas y temporales de las herramientas
+~$*.xlsx
+*__tmp_*.xlsx
+_checkpoint_*.jsonl

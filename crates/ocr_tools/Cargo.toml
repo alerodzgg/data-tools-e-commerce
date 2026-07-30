@@ -1,0 +1,38 @@
+[package]
+name = "ocr_tools"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+app_shell = { workspace = true }
+commerce_core = { workspace = true }
+futures = "0.3"
+image = "0.25"
+imageproc = "0.25"
+ndarray = "0.16"
+ort = { version = "=2.0.0-rc.10", default-features = false, features = ["std", "ndarray", "load-dynamic"] }
+polars = { workspace = true }
+regex = { workspace = true }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "net", "io-util", "test-util"] }
+umya-spreadsheet = "2.3.3"
+
+[features]
+# Solo para los tests de integración de tests/: exponen un constructor que
+# permite hosts privados en `AsyncImageDownloader`, necesario para apuntar al
+# servidor mock local (127.0.0.1) que el filtro anti-SSRF rechazaría en
+# producción. Nunca se activa en un build normal (dev-dependencies no entra
+# en la resolución de features de `cargo build`/`cargo run`).
+test-support = []
+
+[dev-dependencies]
+rust_xlsxwriter = { workspace = true }
+tempfile = { workspace = true }
+# Auto-dependencia solo para habilitar `test-support` durante `cargo test`
+# (ver comentario de la feature): los tests de integración en tests/ son una
+# crate aparte y no ven `#[cfg(test)]` de esta librería.
+ocr_tools = { path = ".", features = ["test-support"] }

@@ -1,0 +1,14 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+    configure)
+        # Solo crea/actualiza el symlink si el destino no existe todavía o ya
+        # es un symlink nuestro (reinstalación/upgrade) — nunca sobrescribe
+        # un archivo real que hubiera ahí por otro motivo (misma guarda que
+        # ya tiene postrm antes de borrar).
+        if [ ! -e /usr/bin/data-tools-e-commerce ] || [ -L /usr/bin/data-tools-e-commerce ]; then
+            ln -sf /usr/lib/data-tools-e-commerce/hub /usr/bin/data-tools-e-commerce
+        fi
+        ;;
+esac

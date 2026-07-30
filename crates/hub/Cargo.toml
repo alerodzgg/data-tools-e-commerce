@@ -1,0 +1,39 @@
+[package]
+name = "hub"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Lanzador de las herramientas de data-tools-e-commerce"
+license = "Proprietary"
+authors = ["Alejandro Rodriguez <alerodzgg@proton.me>"]
+
+[dependencies]
+app_shell = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+# Empaqueta este binario JUNTO a los otros 5 (y los assets de ocr_tools) en un
+# solo .deb: `cargo deb -p hub` desde la raíz del workspace. Todos van al
+# mismo directorio porque `hub` busca a sus herramientas hermanas al lado de
+# su propio ejecutable, y `ocr_tools` busca `models/`/`runtime/` de la misma
+# forma (ver `ocr_tools::assets_dir()`).
+[package.metadata.deb]
+name = "data-tools-e-commerce"
+maintainer = "Alejandro Rodriguez <alerodzgg@proton.me>"
+maintainer-scripts = "debian/"
+assets = [
+    ["target/release/hub", "usr/lib/data-tools-e-commerce/hub", "755"],
+    ["target/release/etl_tools", "usr/lib/data-tools-e-commerce/etl_tools", "755"],
+    ["target/release/ocr_tools", "usr/lib/data-tools-e-commerce/ocr_tools", "755"],
+    ["target/release/data_combinator", "usr/lib/data-tools-e-commerce/data_combinator", "755"],
+    ["target/release/publications_builder", "usr/lib/data-tools-e-commerce/publications_builder", "755"],
+    ["target/release/publications_validator", "usr/lib/data-tools-e-commerce/publications_validator", "755"],
+    ["../ocr_tools/models/*", "usr/lib/data-tools-e-commerce/models/", "644"],
+    ["../ocr_tools/runtime/libonnxruntime.so", "usr/lib/data-tools-e-commerce/runtime/libonnxruntime.so", "755"],
+    [
+        "../ocr_tools/runtime/libonnxruntime_providers_shared.so",
+        "usr/lib/data-tools-e-commerce/runtime/libonnxruntime_providers_shared.so",
+        "755",
+    ],
+]

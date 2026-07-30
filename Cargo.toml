@@ -1,0 +1,30 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+
+# Dependencias compartidas por 2+ crates: versión y features fijadas UNA sola
+# vez acá; cada crate hace `dep = { workspace = true }` (o agrega features
+# propias, que se suman a las de acá). Evita que una crate quede con una
+# versión distinta a las demás por un typo o un bump olvidado.
+[workspace.dependencies]
+app_shell = { version = "0.1.0", path = "crates/app_shell" }
+commerce_core = { version = "0.1.0", path = "crates/commerce_core" }
+polars = { version = "0.54.4", features = ["lazy", "strings", "dtype-full", "fmt"] }
+thiserror = "2.0.19"
+regex = "1.13.1"
+tempfile = "3.27.0"
+rust_xlsxwriter = "0.92.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+zip = { version = "4.2.0", default-features = false, features = ["deflate"] }
+indicatif = "0.17"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

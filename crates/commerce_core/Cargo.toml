@@ -1,0 +1,17 @@
+[package]
+name = "commerce_core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+calamine = "0.30.1"
+encoding_rs = "0.8.35"
+polars = { workspace = true }
+regex = { workspace = true }
+tempfile = { workspace = true }
+thiserror = { workspace = true }
+zip = { workspace = true }
+
+[dev-dependencies]
+rust_xlsxwriter = { workspace = true }

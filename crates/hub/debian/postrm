@@ -1,0 +1,10 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+    remove | purge)
+        if [ -L /usr/bin/data-tools-e-commerce ]; then
+            rm -f /usr/bin/data-tools-e-commerce
+        fi
+        ;;
+esac

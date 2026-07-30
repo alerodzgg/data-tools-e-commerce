@@ -1,0 +1,11 @@
+*.onnx filter=lfs diff=lfs merge=lfs -text
+*.dll filter=lfs diff=lfs merge=lfs -text
+*.so filter=lfs diff=lfs merge=lfs -text
+*.so.* filter=lfs diff=lfs merge=lfs -text
+
+# Scripts de mantenimiento de dpkg: deben llegar con fin de línea LF (un CRLF
+# rompe el shebang `#!/bin/sh` en Linux) y con el bit de ejecución marcado en
+# el índice de git (Windows/NTFS no trackea +x — core.filemode=false — así
+# que sin esto quedarían en el árbol como 100644, y `dpkg` rechaza cualquier
+# maintainer script sin permiso de ejecución).
+crates/hub/debian/* text eol=lf

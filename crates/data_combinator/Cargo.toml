@@ -1,0 +1,16 @@
+[package]
+name = "data_combinator"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+app_shell = { workspace = true }
+commerce_core = { workspace = true }
+csv = "1.4.0"
+polars = { workspace = true }
+tempfile = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+rand = "0.9.5"

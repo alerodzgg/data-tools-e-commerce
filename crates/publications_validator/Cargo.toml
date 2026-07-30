@@ -1,0 +1,19 @@
+[package]
+name = "publications_validator"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+app_shell = { workspace = true }
+commerce_core = { workspace = true }
+fancy-regex = "0.14.0"
+polars = { workspace = true, features = ["concat_str", "ipc", "parquet"] }
+regex = { workspace = true }
+tempfile = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+rust_xlsxwriter = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
