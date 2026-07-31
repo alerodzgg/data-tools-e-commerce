@@ -1,9 +1,10 @@
 use std::collections::{HashMap, HashSet};
-use std::hash::BuildHasher;
 use std::ops::Not;
 use std::path::PathBuf;
 
-use commerce_core::{concat_diagonal, tomar_filas, CoreError, CoreResult, EscritorXlsx};
+use commerce_core::{
+    concat_diagonal, tomar_filas, AcumuladorParticionado, CoreError, CoreResult, EscritorXlsx,
+};
 use polars::prelude::*;
 
 use crate::clasificacion::clasificar_uno;
@@ -359,36 +360,13 @@ impl Procesador {
         } else {
             self.particiones_dedup
         };
-        let tmpdir = tempfile::tempdir()?;
-        let mut archivos_part: Vec<Vec<PathBuf>> = vec![Vec::new(); n_part];
-        let mut buffer_part: Vec<Vec<DataFrame>> = vec![Vec::new(); n_part];
-        let mut buffer_filas: usize = 0;
-        let mut contador_archivos = vec![0usize; n_part];
-        // Semilla aleatoria por CORRIDA, no por valor: todos los títulos de
-        // esta misma corrida deben hashear consistentemente entre sí para
-        // caer siempre en la misma partición. `DefaultHasher::new()` a
-        // secas usa claves fijas — un archivo diseñado a propósito podría
-        // forzar que todo caiga en una sola partición, anulando el acotado
-        // de memoria que este particionado existe para garantizar.
-        let hasher_state = std::collections::hash_map::RandomState::new();
-
-        let mut flush = |buffer_part: &mut Vec<Vec<DataFrame>>,
-                         archivos_part: &mut Vec<Vec<PathBuf>>|
-         -> CoreResult<()> {
-            for p in 0..n_part {
-                if buffer_part[p].is_empty() {
-                    continue;
-                }
-                let dfs = std::mem::take(&mut buffer_part[p]);
-                let mut df = concat_diagonal(dfs)?;
-                let ruta = tmpdir.path().join(format!("p{p}_{}.ipc", contador_archivos[p]));
-                contador_archivos[p] += 1;
-                let mut archivo = std::fs::File::create(&ruta)?;
-                IpcWriter::new(&mut archivo).finish(&mut df)?;
-                archivos_part[p].push(ruta);
-            }
-            Ok(())
-        };
+        // Mecanismo de particionado (buffer + spill a `.ipc` + semilla de
+        // hash aleatoria por corrida) compartido con
+        // `publications_builder::compatibilidad` vía
+        // `commerce_core::AcumuladorParticionado` — antes duplicado acá casi
+        // palabra por palabra, con el mismo bug de semilla fija corregido
+        // dos veces por separado en la Ronda 8 de auditoría.
+        let mut acumulador = AcumuladorParticionado::nuevo(n_part, 1_000_000)?;
 
         let mut stats = self.pasada1(escritor, &mut avisar, progreso, |nombre_hoja, validas| {
             let alto = validas.height();
@@ -397,40 +375,10 @@ impl Procesador {
                 COL_HOJA_ORIGEN.into(),
                 vec![nombre_hoja.to_string(); alto],
             ))?;
-            let traducido = columna_texto(&validas, COL_TRADUCIDO)?;
-            let mut por_particion: Vec<Vec<usize>> = vec![Vec::new(); n_part];
-            for (i, t) in traducido.iter().enumerate() {
-                let pid = (hasher_state.hash_one(t) % n_part as u64) as usize;
-                por_particion[pid].push(i);
-            }
-            for (pid, indices) in por_particion.into_iter().enumerate() {
-                if !indices.is_empty() {
-                    buffer_part[pid].push(tomar_filas(&validas, &indices)?);
-                }
-            }
-            buffer_filas += alto;
-            if buffer_filas >= 1_000_000 {
-                flush(&mut buffer_part, &mut archivos_part)?;
-                buffer_filas = 0;
-            }
-            Ok(())
+            acumulador.agregar(&validas, COL_TRADUCIDO)
         })?;
-        flush(&mut buffer_part, &mut archivos_part)?;
 
-        for rutas in &archivos_part {
-            if rutas.is_empty() {
-                continue;
-            }
-            let dfs: Vec<DataFrame> = rutas
-                .iter()
-                .map(|r| -> CoreResult<DataFrame> {
-                    let archivo = std::fs::File::open(r)?;
-                    Ok(IpcReader::new(archivo).finish()?)
-                })
-                .collect::<CoreResult<_>>()?;
-            let bucket = concat_diagonal(dfs)?;
-            escribir_dedup(bucket, escritor, &mut stats, &mut avisar)?;
-        }
+        acumulador.finalizar(|bucket| escribir_dedup(bucket, escritor, &mut stats, &mut avisar))?;
         Ok(stats)
     }
 

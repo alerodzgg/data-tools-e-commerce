@@ -40,6 +40,7 @@ where
 }
 
 // calamine nombra `__UNNAMED__{idx}` (0-based) las cabeceras vacías.
+#[allow(clippy::unwrap_used)] // patrón regex literal fijo, válido por construcción
 static RE_SIN_NOMBRE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^__UNNAMED__(\d+)$").unwrap());
 
 /// Renombra las columnas `__UNNAMED__N` (0-based) a `Columna_{N+1}` (1-based).
@@ -53,6 +54,8 @@ pub fn renombrar_canonico(df: DataFrame) -> PolarsResult<DataFrame> {
     let mut df = df;
     for columna in &columnas {
         if let Some(cap) = RE_SIN_NOMBRE.captures(columna) {
+            // El grupo 1 de RE_SIN_NOMBRE es `\d+`: siempre parsea a u64.
+            #[allow(clippy::unwrap_used)]
             let n: u64 = cap[1].parse().unwrap();
             let canonico = format!("Columna_{}", n + 1);
             if !existentes.contains(canonico.as_str()) {

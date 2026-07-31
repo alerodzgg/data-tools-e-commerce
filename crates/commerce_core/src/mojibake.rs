@@ -5,7 +5,7 @@ use polars::prelude::*;
 
 /// Caracteres que delatan texto mal decodificado. Si una cadena no contiene
 /// ninguno, no hay nada que reparar: nos saltamos el cálculo por completo.
-pub const PISTAS_MOJIBAKE: &[char] = &['Ã', 'Â', 'â', 'Ð', 'Ñ', 'Å', '\u{FFFD}', '€', '™'];
+const PISTAS_MOJIBAKE: &[char] = &['Ã', 'Â', 'â', 'Ð', 'Ñ', 'Å', '\u{FFFD}', '€', '™'];
 
 fn contiene_pista(s: &str) -> bool {
     s.chars().any(|c| PISTAS_MOJIBAKE.contains(&c))

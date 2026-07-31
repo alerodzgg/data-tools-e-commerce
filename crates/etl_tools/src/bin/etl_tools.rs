@@ -76,7 +76,7 @@ fn excluir_refs(excluir: &HashSet<String>) -> Vec<&str> {
 /// un `.xlsx` que el usuario tiene abierto en Excel es el caso típico de
 /// fallo acá: sin este mensaje, el usuario ve un error críptico y no sabe
 /// que sus datos ya procesados quedaron a salvo en `origen`, sin renombrar.
-fn renombrar_o_avisar(origen: &Path, destino: &Path) -> AppResult<()> {
+fn renombrar_o_avisar(origen: &commerce_core::RutaEscritaReal, destino: &Path) -> AppResult<()> {
     std::fs::rename(origen, destino).map_err(|e| {
         std::io::Error::other(format!(
             "No se pudo sobrescribir '{}' (¿está abierto en Excel u otro programa? \
@@ -128,11 +128,16 @@ fn procesar_por_palabra(archivo: &Path, ruta_salida: &Path) -> AppResult<()> {
     };
     let refs = excluir_refs(&excluir);
 
-    let columnas = columnas_union(
+    // Una sola apertura del archivo para todo lo que sigue (columnas, total
+    // de filas y los datos a procesar) — antes `columnas_union`,
+    // `total_filas` e `iter_hojas_valores` abrían el mismo archivo por
+    // separado, 3 veces, para lo mismo.
+    let bloques = etl_tools::iter_hojas_valores(
         std::slice::from_ref(&archivo.to_path_buf()),
         Some(&refs),
         app_shell::warn,
-    );
+    )?;
+    let columnas = commerce_core::columnas_union_de_bloques(&bloques);
     if columnas.is_empty() {
         app_shell::error("No se pudieron leer columnas de los archivos.");
         return Ok(());
@@ -165,16 +170,7 @@ fn procesar_por_palabra(archivo: &Path, ruta_salida: &Path) -> AppResult<()> {
         .expect("patron valido: palabras escapadas");
 
     let stem = archivo.file_stem().unwrap_or_default().to_string_lossy();
-    let total = total_filas(
-        std::slice::from_ref(&archivo.to_path_buf()),
-        Some(&refs),
-        app_shell::warn,
-    );
-    let bloques = etl_tools::iter_hojas_valores(
-        std::slice::from_ref(&archivo.to_path_buf()),
-        Some(&refs),
-        app_shell::warn,
-    )?;
+    let total: u64 = bloques.iter().map(|df| df.height() as u64).sum();
 
     let ruta_proc = commerce_core::ruta_unica(ruta_salida.join(format!("procesado_{stem}.xlsx")));
     let ruta_borr = commerce_core::ruta_unica(ruta_salida.join(format!("borradas_{stem}.xlsx")));
@@ -186,7 +182,7 @@ fn procesar_por_palabra(archivo: &Path, ruta_salida: &Path) -> AppResult<()> {
 
     let mut escritor_validas = etl_tools::nuevo_escritor(&ruta_proc, columnas.clone())?;
     let mut escritor_borradas = etl_tools::nuevo_escritor(&ruta_borr, cols_borradas.clone())?;
-    let barra = app_shell::barra_progreso(&format!("Procesando {stem}"), total.unwrap_or(0));
+    let barra = app_shell::barra_progreso(&format!("Procesando {stem}"), total);
 
     for chunk in bloques {
         let filas_entrada = chunk.height() as u64;
@@ -326,23 +322,23 @@ fn buscar_duplicados(ruta_salida: &Path) -> AppResult<()> {
         |n| barra.inc(n),
     );
     barra.finish_and_clear();
-    let (n_dup, n_limpio) = match resultado {
-        Ok(v) => v,
-        Err(e) => {
-            let _ = std::fs::remove_file(&ruta_dup);
-            if let Some(rl) = &ruta_limpia {
-                let _ = std::fs::remove_file(rl);
-            }
-            return Err(e.into());
-        }
-    };
+    // Ante un error, `escribir_reporte_y_limpio` ya abortó sus propios
+    // escritores (contra su ruta REAL, no la que se le pidió) — no hace
+    // falta que este llamador adivine qué archivo limpiar.
+    let (n_dup, n_limpio, ruta_limpia_real) = resultado?;
 
     app_shell::success(&format!(
         "Reporte de duplicados: '{}' ({n_dup} filas).",
         ruta_dup.file_name().unwrap_or_default().to_string_lossy()
     ));
     if eleccion == opciones[0] {
-        if let Some(rl) = &ruta_limpia {
+        // Renombrar la ruta REAL (`ruta_limpia_real`), nunca `ruta_limpia`:
+        // si esta última ya existía (un temporal rancio de una corrida
+        // anterior interrumpida), `EscritorXlsx` habría redirigido la
+        // escritura a otra ruta, y renombrar `ruta_limpia` sobre el archivo
+        // original renombraría esa basura vieja, nunca tocada por esta
+        // corrida, destruyendo los datos del usuario.
+        if let Some(rl) = &ruta_limpia_real {
             renombrar_o_avisar(rl, &archivo)?;
         }
         app_shell::success(&format!(
@@ -350,7 +346,7 @@ fn buscar_duplicados(ruta_salida: &Path) -> AppResult<()> {
             archivo.file_name().unwrap_or_default().to_string_lossy()
         ));
     } else if eleccion == opciones[1] {
-        if let Some(rl) = &ruta_limpia {
+        if let Some(rl) = &ruta_limpia_real {
             app_shell::success(&format!(
                 "Nuevo archivo limpio en '{}' ({n_limpio} filas).",
                 rl.file_name().unwrap_or_default().to_string_lossy()
@@ -518,17 +514,13 @@ fn gestionar_duplicados(ruta_salida: &Path) -> AppResult<()> {
 // Modo — Ordenar columnas
 // ════════════════════════════════════════════════════════════════════════
 
-fn cargar_completo(
-    archivo: &Path,
-    excluir: &HashSet<String>,
-    columnas: &[String],
-) -> AppResult<Option<DataFrame>> {
-    let refs = excluir_refs(excluir);
-    let bloques = etl_tools::iter_hojas_valores(
-        std::slice::from_ref(&archivo.to_path_buf()),
-        Some(&refs),
-        app_shell::warn,
-    )?;
+/// Junta bloques YA CARGADOS (p. ej. por [`etl_tools::iter_hojas_valores`])
+/// en un único `DataFrame`, alineado a `columnas`. No abre ningún archivo:
+/// los llamadores que necesitan columnas + datos del mismo archivo cargan
+/// los bloques UNA sola vez y los pasan acá, en vez de que esta función
+/// volviera a leerlos (esa doble apertura era justo el problema que este
+/// cambio corrige).
+fn armar_desde_bloques(bloques: Vec<DataFrame>, columnas: &[String]) -> AppResult<Option<DataFrame>> {
     let mut partes = Vec::new();
     for chunk in bloques {
         let chunk = etl_tools::preparar_chunk(&chunk, columnas)?;
@@ -568,11 +560,15 @@ fn ordenar_columna(ruta_salida: &Path) -> AppResult<()> {
     let Some(hojas_excluir) = preguntar_hojas_excluir_de(&archivo, "")? else {
         return Ok(());
     };
-    let columnas = columnas_union(
+    // Una sola apertura del archivo para columnas + datos — antes
+    // `columnas_union` y `cargar_completo` (vía `iter_hojas_valores`) abrían
+    // el mismo archivo por separado.
+    let bloques = etl_tools::iter_hojas_valores(
         std::slice::from_ref(&archivo),
         Some(&excluir_refs(&hojas_excluir)),
         app_shell::warn,
-    );
+    )?;
+    let columnas = commerce_core::columnas_union_de_bloques(&bloques);
     if columnas.is_empty() {
         app_shell::error(&format!(
             "No se pudieron leer columnas de '{}'.",
@@ -592,8 +588,8 @@ fn ordenar_columna(ruta_salida: &Path) -> AppResult<()> {
     let ascendente =
         app_shell::menu_confirmar("Sentido del orden: ¿ascendente (A→Z, 0→9)?", true)?.unwrap_or(true);
 
-    app_shell::info(&format!("Leyendo y ordenando por '{columna}'..."));
-    let Some(df) = cargar_completo(&archivo, &hojas_excluir, &columnas)? else {
+    app_shell::info(&format!("Ordenando por '{columna}'..."));
+    let Some(df) = armar_desde_bloques(bloques, &columnas)? else {
         app_shell::warn("El archivo está vacío.");
         return Ok(());
     };
@@ -649,11 +645,14 @@ fn dividir_por_caracteres(ruta_salida: &Path) -> AppResult<()> {
     let Some(hojas_excluir) = preguntar_hojas_excluir_de(&archivo, "")? else {
         return Ok(());
     };
-    let columnas = columnas_union(
+    // Una sola apertura del archivo para columnas + datos (ver
+    // `armar_desde_bloques` y el comentario de `ordenar_columna`).
+    let bloques = etl_tools::iter_hojas_valores(
         std::slice::from_ref(&archivo),
         Some(&excluir_refs(&hojas_excluir)),
         app_shell::warn,
-    );
+    )?;
+    let columnas = commerce_core::columnas_union_de_bloques(&bloques);
     if columnas.is_empty() {
         app_shell::error(&format!(
             "No se pudieron leer columnas de '{}'.",
@@ -699,17 +698,19 @@ fn dividir_por_caracteres(ruta_salida: &Path) -> AppResult<()> {
         return Ok(());
     }
 
-    app_shell::info(&format!(
-        "Leyendo '{}'...",
-        archivo.file_name().unwrap_or_default().to_string_lossy()
-    ));
-    let Some(df) = cargar_completo(&archivo, &hojas_excluir, &columnas)? else {
-        app_shell::warn("El archivo está vacío.");
-        return Ok(());
-    };
     let stem = archivo.file_stem().unwrap_or_default().to_string_lossy();
 
     if accion == opciones[0] {
+        // Este modo SÍ necesita el archivo completo en memoria: es un orden
+        // global por la nueva columna de conteo, no un filtro por fila.
+        app_shell::info(&format!(
+            "Leyendo '{}'...",
+            archivo.file_name().unwrap_or_default().to_string_lossy()
+        ));
+        let Some(df) = armar_desde_bloques(bloques, &columnas)? else {
+            app_shell::warn("El archivo está vacío.");
+            return Ok(());
+        };
         let opciones_orden = vec!["Menor a mayor".to_string(), "Mayor a menor".to_string()];
         let ascendente =
             app_shell::menu_seleccionar("Orden por número de caracteres:", opciones_orden.clone())?
@@ -745,8 +746,17 @@ fn dividir_por_caracteres(ruta_salida: &Path) -> AppResult<()> {
         return Ok(());
     }
 
+    // Los otros dos modos son un FILTRO: cada fila se clasifica solo por su
+    // propia longitud (`dividir_dentro_fuera`), así que no hace falta juntar
+    // el archivo entero en un único `DataFrame` (a diferencia del modo de
+    // arriba) — se procesa bloque por bloque, sin la copia extra de
+    // `armar_desde_bloques`.
+    if bloques.is_empty() {
+        app_shell::warn("El archivo está vacío.");
+        return Ok(());
+    }
     let limite = limite.expect("hojas/reporte siempre piden limite");
-    let (dentro, fuera) = etl_tools::dividir_dentro_fuera(&df, &columna, limite)?;
+    let total_filas: u64 = bloques.iter().map(|df| df.height() as u64).sum();
 
     if accion == opciones[1] {
         let ruta = commerce_core::ruta_unica(ruta_salida.join(format!("dividido_{stem}.xlsx")));
@@ -766,24 +776,36 @@ fn dividir_por_caracteres(ruta_salida: &Path) -> AppResult<()> {
                 "Escribiendo {}",
                 ruta.file_name().unwrap_or_default().to_string_lossy()
             ),
-            df.height() as u64,
+            total_filas,
         );
         let hoja_dentro = format!("Hasta_{limite}");
         let hoja_fuera = format!("Mas_de_{limite}");
-        let dentro = dentro.select(&columnas)?;
-        let fuera_sel = fuera.select(&columnas)?;
-        for (bloque, hoja) in [(&dentro, hoja_dentro.as_str()), (&fuera_sel, hoja_fuera.as_str())] {
-            escribir_por_bloques(&mut escritor, bloque, Some(hoja), &barra)?;
+        let mut n_dentro = 0u64;
+        let mut n_fuera = 0u64;
+        for chunk in &bloques {
+            let preparado = etl_tools::preparar_chunk(chunk, &columnas)?.select(&columnas)?;
+            let (dentro, fuera) = etl_tools::dividir_dentro_fuera(&preparado, &columna, limite)?;
+            n_dentro += dentro.height() as u64;
+            n_fuera += fuera.height() as u64;
+            escribir_por_bloques(&mut escritor, &dentro, Some(&hoja_dentro), &barra)?;
+            escribir_por_bloques(&mut escritor, &fuera, Some(&hoja_fuera), &barra)?;
         }
         barra.finish_and_clear();
         app_shell::success(&format!(
-            "Guardado: '{}' — {} fila(s) en 'Hasta_{limite}', {} fila(s) en 'Mas_de_{limite}'.",
+            "Guardado: '{}' — {n_dentro} fila(s) en 'Hasta_{limite}', {n_fuera} fila(s) en 'Mas_de_{limite}'.",
             ruta.file_name().unwrap_or_default().to_string_lossy(),
-            dentro.height(),
-            fuera.height()
         ));
     } else {
-        if fuera.height() == 0 {
+        // Primero se cuenta SIN escribir nada, para no crear un archivo de
+        // reporte vacío si ninguna fila supera el límite (mismo
+        // comportamiento que antes, que decidía esto después de cargar todo).
+        let mut n_fuera_total = 0u64;
+        for chunk in &bloques {
+            let preparado = etl_tools::preparar_chunk(chunk, &columnas)?.select(&columnas)?;
+            let conteos = etl_tools::contar_caracteres(&preparado, &columna)?;
+            n_fuera_total += conteos.iter().filter(|c| **c > limite).count() as u64;
+        }
+        if n_fuera_total == 0 {
             app_shell::info(&format!(
                 "Ninguna fila supera los {limite} caracteres en '{columna}'. Sin reporte que generar."
             ));
@@ -797,16 +819,19 @@ fn dividir_por_caracteres(ruta_salida: &Path) -> AppResult<()> {
                 "Escribiendo {}",
                 ruta.file_name().unwrap_or_default().to_string_lossy()
             ),
-            fuera.height() as u64,
+            n_fuera_total,
         );
-        let fuera_sel = fuera.select(&columnas)?;
-        escribir_por_bloques(&mut escritor, &fuera_sel, None, &barra)?;
+        for chunk in &bloques {
+            let preparado = etl_tools::preparar_chunk(chunk, &columnas)?.select(&columnas)?;
+            let (_dentro, fuera) = etl_tools::dividir_dentro_fuera(&preparado, &columna, limite)?;
+            if fuera.height() > 0 {
+                escribir_por_bloques(&mut escritor, &fuera, None, &barra)?;
+            }
+        }
         barra.finish_and_clear();
         app_shell::success(&format!(
-            "Reporte guardado: '{}' ({} de {} filas superan {limite} caracteres en '{columna}').",
+            "Reporte guardado: '{}' ({n_fuera_total} de {total_filas} filas superan {limite} caracteres en '{columna}').",
             ruta.file_name().unwrap_or_default().to_string_lossy(),
-            fuera.height(),
-            df.height()
         ));
     }
     Ok(())
@@ -945,7 +970,7 @@ fn ruta_cruce(indice_accion: usize, base: &Path, ruta_salida: &Path, prefijo: &s
 
 fn cerrar_cruce(
     indice_accion: usize,
-    ruta: &Path,
+    ruta: &commerce_core::RutaEscritaReal,
     base: &Path,
     total_escrito: u64,
     filas_match: u64,
@@ -979,7 +1004,12 @@ fn cerrar_cruce(
 /// medias si algo falla. Antes vivía duplicado (~70 líneas casi idénticas)
 /// entre `buscarv_parcial_modo` y `encontrar_modo`; lo único que cambia
 /// entre los dos modos son estos parámetros. Devuelve `(filas_escritas,
-/// filas_con_match)` para que el llamador arme su propio `cerrar_cruce`.
+/// filas_con_match, ruta_real)` para que el llamador arme su propio
+/// `cerrar_cruce` — `ruta_real` es la ruta EFECTIVA usada por `EscritorXlsx`
+/// (puede diferir de `ruta` si la redirigió por una colisión, p. ej. un
+/// temporal rancio de una corrida anterior interrumpida); usar `ruta` en vez
+/// de `ruta_real` para sobrescribir el archivo base es lo que causaba que se
+/// renombrara basura vieja sobre los datos del usuario.
 #[allow(clippy::too_many_arguments)]
 fn cruzar_y_escribir(
     archivo: &Path,
@@ -996,7 +1026,7 @@ fn cruzar_y_escribir(
     ruta: &Path,
     total: u64,
     etiqueta_barra: &str,
-) -> AppResult<(u64, u64)> {
+) -> AppResult<(u64, u64, commerce_core::RutaEscritaReal)> {
     let filas_por_lote = FILAS_MIN_LOTE_PARCIAL.max(CELDAS_POR_LOTE_PARCIAL / columnas_archivo.len().max(1));
     let barra = app_shell::barra_progreso(etiqueta_barra, total);
 
@@ -1032,6 +1062,7 @@ fn cruzar_y_escribir(
         };
 
     let mut escritor = etl_tools::nuevo_escritor(ruta, columnas_salida.to_vec())?;
+    let ruta_real = commerce_core::RutaEscritaReal::nueva(escritor.ruta.clone());
     let ejecucion = (|| -> AppResult<u64> {
         let mut lote: Vec<DataFrame> = Vec::new();
         let mut alto_lote = 0usize;
@@ -1057,11 +1088,11 @@ fn cruzar_y_escribir(
     let filas_match = match ejecucion {
         Ok(v) => v,
         Err(e) => {
-            let _ = std::fs::remove_file(ruta);
+            let _ = escritor.abortar();
             return Err(e);
         }
     };
-    Ok((escritor.total as u64, filas_match))
+    Ok((escritor.total as u64, filas_match, ruta_real))
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -1147,17 +1178,12 @@ fn buscarv_modo(ruta_salida: &Path) -> AppResult<()> {
         |n| barra.inc(n),
     );
     barra.finish_and_clear();
-    let (total_escrito, filas_match, filas_total) = match resultado {
-        Ok(v) => v,
-        Err(e) => {
-            let _ = std::fs::remove_file(&ruta);
-            return Err(e.into());
-        }
-    };
+    // `buscarv` ya abortó su propio escritor (contra su ruta REAL) si falló.
+    let (total_escrito, filas_match, filas_total, ruta_real) = resultado?;
 
     cerrar_cruce(
         indice_accion,
-        &ruta,
+        &ruta_real,
         &prep.base,
         total_escrito as u64,
         filas_match,
@@ -1254,7 +1280,7 @@ fn buscarv_parcial_modo(ruta_salida: &Path) -> AppResult<()> {
         .chain(prep.cols_base.iter().cloned())
         .collect();
 
-    let (escritor_total, filas_match) = cruzar_y_escribir(
+    let (escritor_total, filas_match, ruta_real) = cruzar_y_escribir(
         &prep.base,
         &refs_base,
         &prep.cols_base,
@@ -1276,7 +1302,7 @@ fn buscarv_parcial_modo(ruta_salida: &Path) -> AppResult<()> {
 
     cerrar_cruce(
         indice_accion,
-        &ruta,
+        &ruta_real,
         &prep.base,
         escritor_total,
         filas_match,
@@ -1429,7 +1455,7 @@ fn encontrar_modo(ruta_salida: &Path) -> AppResult<()> {
     let total = total_filas(std::slice::from_ref(&base), Some(&refs_base), app_shell::warn).unwrap_or(0);
     let col_encontrada = vec![COL_ENCONTRADA.to_string()];
 
-    let (escritor_total, filas_match) = cruzar_y_escribir(
+    let (escritor_total, filas_match, ruta_real) = cruzar_y_escribir(
         &base,
         &refs_base,
         &cols_base,
@@ -1449,7 +1475,14 @@ fn encontrar_modo(ruta_salida: &Path) -> AppResult<()> {
         ),
     )?;
 
-    cerrar_cruce(indice_accion, &ruta, &base, escritor_total, filas_match, total)
+    cerrar_cruce(
+        indice_accion,
+        &ruta_real,
+        &base,
+        escritor_total,
+        filas_match,
+        total,
+    )
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -1530,6 +1563,15 @@ fn main() {
 mod tests {
     use super::*;
 
+    /// Serializa los tests que mutan el `static` global de
+    /// `app_shell::rutas` (vía `fijar_rutas`), para que cargo pueda seguir
+    /// corriendo tests de este archivo en paralelo sin que dos de ellos
+    /// pisen la carpeta de entrada del otro a mitad de camino.
+    fn rutas_mutex() -> &'static std::sync::Mutex<()> {
+        static M: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+        M.get_or_init(|| std::sync::Mutex::new(()))
+    }
+
     #[test]
     fn ruta_cruce_temporal_distingue_exacto_de_parcial_sobre_la_misma_base() {
         // Antes: el caso 0 (sobrescribir vía temporal) ignoraba `prefijo` —
@@ -1552,10 +1594,11 @@ mod tests {
         let origen = tmp.path().join("origen.xlsx");
         let destino = tmp.path().join("destino.xlsx");
         std::fs::write(&origen, b"contenido").unwrap();
+        let origen = commerce_core::RutaEscritaReal::nueva(origen);
 
         renombrar_o_avisar(&origen, &destino).unwrap();
 
-        assert!(!origen.exists());
+        assert!(!origen.as_path().exists());
         assert_eq!(std::fs::read(&destino).unwrap(), b"contenido");
     }
 
@@ -1564,12 +1607,123 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let origen = tmp.path().join("no_existe.xlsx");
         let destino = tmp.path().join("destino.xlsx");
+        let origen = commerce_core::RutaEscritaReal::nueva(origen);
 
         let err = renombrar_o_avisar(&origen, &destino).unwrap_err().to_string();
 
         assert!(
             err.contains(&destino.display().to_string()) && err.contains(&origen.display().to_string()),
             "el mensaje debe mencionar tanto el destino como dónde quedaron los datos: {err}"
+        );
+    }
+
+    #[test]
+    fn dividir_por_caracteres_modo_hojas_particiona_por_bloques_sin_perder_filas() {
+        // Cubre el refactor a streaming (sin `cargar_completo`/vstack) de las
+        // 2 variantes de partición: cada fila se clasifica por su propia
+        // longitud, acumulando dentro/fuera bloque por bloque en vez de
+        // materializar el archivo entero de una vez.
+        use app_shell::testing::{con_guion, Respuesta};
+        use rust_xlsxwriter::Workbook;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let entrada = tmp.path().join("entrada");
+        let salida = tmp.path().join("salida");
+        std::fs::create_dir_all(&entrada).unwrap();
+        std::fs::create_dir_all(&salida).unwrap();
+
+        let archivo = entrada.join("datos.xlsx");
+        let descripciones = [
+            "corto".to_string(),
+            "x".repeat(20),
+            "y".repeat(15),
+            "z".to_string(),
+        ];
+        {
+            let mut wb = Workbook::new();
+            let hoja = wb.add_worksheet();
+            hoja.write(0, 0, "Sku").unwrap();
+            hoja.write(0, 1, "Descripcion").unwrap();
+            for (i, desc) in descripciones.iter().enumerate() {
+                let sku = format!("A{}", i + 1);
+                hoja.write(i as u32 + 1, 0, sku.as_str()).unwrap();
+                hoja.write(i as u32 + 1, 1, desc.as_str()).unwrap();
+            }
+            wb.save(&archivo).unwrap();
+        }
+
+        // `app_shell::ruta_entrada()`/`fijar_rutas` son un `static` global del
+        // proceso: sin este mutex, dos tests de este archivo que lo mutaran a
+        // la vez (cargo corre los tests en paralelo por defecto) podrían leer
+        // la carpeta de entrada del OTRO test a mitad de camino.
+        let _guard = rutas_mutex().lock().unwrap_or_else(|e| e.into_inner());
+        let original_entrada = app_shell::ruta_entrada();
+        app_shell::fijar_rutas(Some(entrada.clone()), None);
+
+        con_guion(
+            vec![
+                Respuesta::Elegir(0),               // archivo: datos.xlsx (el único)
+                Respuesta::Elegir(1),               // columna: Descripcion
+                Respuesta::Elegir(1),               // acción: Dividir en 2 hojas
+                Respuesta::Texto("10".to_string()), // límite
+            ],
+            || dividir_por_caracteres(&salida).unwrap(),
+        );
+
+        app_shell::fijar_rutas(Some(original_entrada), None);
+
+        let ruta = salida.join("dividido_datos.xlsx");
+        let mut libro = commerce_core::abrir_libro(&ruta).unwrap();
+        let dentro = commerce_core::leer_hoja_por_nombre(&mut libro, &ruta, "Hasta_10").unwrap();
+        let fuera = commerce_core::leer_hoja_por_nombre(&mut libro, &ruta, "Mas_de_10").unwrap();
+        // "corto" (5) y "z" (1) caen dentro del límite; los dos repeats (20 y
+        // 15) quedan fuera — ninguna fila debe perderse en la partición.
+        assert_eq!(dentro.height(), 2);
+        assert_eq!(fuera.height(), 2);
+    }
+
+    #[test]
+    fn dividir_por_caracteres_modo_reporte_no_crea_archivo_si_nadie_supera_el_limite() {
+        use app_shell::testing::{con_guion, Respuesta};
+        use rust_xlsxwriter::Workbook;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let entrada = tmp.path().join("entrada");
+        let salida = tmp.path().join("salida");
+        std::fs::create_dir_all(&entrada).unwrap();
+        std::fs::create_dir_all(&salida).unwrap();
+
+        let archivo = entrada.join("datos.xlsx");
+        {
+            let mut wb = Workbook::new();
+            let hoja = wb.add_worksheet();
+            hoja.write(0, 0, "Sku").unwrap();
+            hoja.write(0, 1, "Descripcion").unwrap();
+            hoja.write(1, 0, "A1").unwrap();
+            hoja.write(1, 1, "corto").unwrap();
+            wb.save(&archivo).unwrap();
+        }
+
+        let _guard = rutas_mutex().lock().unwrap_or_else(|e| e.into_inner());
+        let original_entrada = app_shell::ruta_entrada();
+        app_shell::fijar_rutas(Some(entrada.clone()), None);
+
+        con_guion(
+            vec![
+                Respuesta::Elegir(0),                 // archivo: datos.xlsx
+                Respuesta::Elegir(1),                 // columna: Descripcion
+                Respuesta::Elegir(2),                 // acción: Reporte aparte
+                Respuesta::Texto("1000".to_string()), // límite altísimo: nadie lo supera
+            ],
+            || dividir_por_caracteres(&salida).unwrap(),
+        );
+
+        app_shell::fijar_rutas(Some(original_entrada), None);
+
+        let ruta = salida.join("reporte_mas_de_1000_datos.xlsx");
+        assert!(
+            !ruta.exists(),
+            "no debe crearse ningún archivo de reporte si ninguna fila supera el límite"
         );
     }
 }

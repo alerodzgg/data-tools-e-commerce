@@ -62,8 +62,18 @@ pub fn extraer_cantidades(titulo: &str) -> String {
     let minuscula = titulo.to_lowercase();
     let palabras: HashSet<&str> = PALABRA.find_iter(&minuscula).map(|m| m.as_str()).collect();
     for clave in ["kit", "pair", "set", "pcs"] {
+        // `.get()`, no índice directo: las claves de este bucle y las de
+        // `MAPEO_CANTIDADES` viven en archivos distintos (comunes.rs /
+        // constantes.rs). Si una keyword nueva se agrega acá sin
+        // sincronizar el mapa, un título scrapeado real que la contenga no
+        // debe hacer panickear todo el proceso de construcción — se omite
+        // la cantidad para ese título (igual que si no hubiera match) y se
+        // sigue con el resto del lote.
         if palabras.contains(clave) {
-            return capitalizar(MAPEO_CANTIDADES[clave]);
+            if let Some(valor) = MAPEO_CANTIDADES.get(clave) {
+                return capitalizar(valor);
+            }
+            return String::new();
         }
     }
     String::new()
@@ -343,11 +353,12 @@ pub fn extraer_precio_entero(df: &DataFrame, columna: &str) -> CoreResult<DataFr
 /// Regex del identificador de artículo eBay al final de la URL.
 pub static RE_ID_EBAY: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"/(\d+)(?:\?|$)").unwrap());
 
-/// Limpiezas y transformaciones comunes a todos los modos: imágenes, OEM y
-/// SKU base (estilo eBay). `columnas_mojibake_extra` solo se usa si
-/// [`crate::constantes::USAR_REPARACION_MOJIBAKE`] está activo (reservado,
-/// hoy siempre desactivado: el arreglo de mojibake es lento y solo hace
-/// falta si el texto trae símbolos rotos).
+/// Limpiezas y transformaciones comunes a todos los modos: normaliza las URLs
+/// de imagen y genera el SKU base (estilo eBay); la transformación de OEM
+/// solo se aplica si `modificar_oem` es `true`. `columnas_mojibake_extra`
+/// solo se usa si [`crate::constantes::USAR_REPARACION_MOJIBAKE`] está activo
+/// (reservado, hoy siempre desactivado: el arreglo de mojibake es lento y
+/// solo hace falta si el texto trae símbolos rotos).
 pub fn aplicar_transformaciones_comunes(
     df: &DataFrame,
     modificar_oem: bool,

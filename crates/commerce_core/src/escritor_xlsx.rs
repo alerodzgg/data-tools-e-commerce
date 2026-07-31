@@ -234,6 +234,8 @@ impl EscritorXlsx {
             return Ok(());
         }
 
+        // El `return` de arriba ya garantiza que hay al menos un `true`.
+        #[allow(clippy::unwrap_used)]
         let ultima = con_datos.iter().rposition(|&b| b).unwrap();
 
         let pendientes = self.bases[idx].vacias_pendientes;
@@ -279,6 +281,9 @@ impl EscritorXlsx {
             self.cerrar_hoja(idx_hoja)?;
         }
         self.escribir_estructura()?;
+        // `self.zip` solo pasa a `None` acá mismo, y `cerrar_interno` no
+        // puede correr dos veces (`cerrar()` es idempotente vía `cerrado`).
+        #[allow(clippy::expect_used)]
         self.zip
             .take()
             .expect("EscritorXlsx: zip ya finalizado")
@@ -297,6 +302,10 @@ impl EscritorXlsx {
         Ok(())
     }
 
+    // Solo se llama antes de `cerrar_interno`/`abortar` (que dejan `zip` en
+    // `None`): `escribir()` y las funciones internas de emisión chequean
+    // `self.cerrado` antes de llegar acá.
+    #[allow(clippy::expect_used)]
     fn zip_mut(&mut self) -> &mut ZipWriter<File> {
         self.zip.as_mut().expect("EscritorXlsx: zip ya finalizado")
     }
@@ -405,6 +414,8 @@ impl EscritorXlsx {
         if necesita_nueva {
             self.nueva_hoja(base)?;
         }
+        // `nueva_hoja` siempre deja `hoja_idx` en `Some`.
+        #[allow(clippy::unwrap_used)]
         let hoja_idx = self.bases[idx].hoja_idx.unwrap();
         Ok(self.filas_por_hoja - self.hojas[hoja_idx].filas)
     }
@@ -418,6 +429,8 @@ impl EscritorXlsx {
             let tomar = disponible.min(restante).min(Self::FILAS_POR_BLOQUE);
             let idx = self.indice_base[base];
             let fila_vacia = self.bases[idx].fila_vacia.clone();
+            // `self.espacio(base)?` dos líneas arriba ya garantiza `Some`.
+            #[allow(clippy::unwrap_used)]
             let hoja_idx = self.bases[idx].hoja_idx.unwrap();
             let hoja = &mut self.hojas[hoja_idx];
             hoja.tmp.escribir(fila_vacia.repeat(tomar).as_bytes())?;
@@ -442,6 +455,8 @@ impl EscritorXlsx {
             let xml = serializar_bloque_xml(&bloque, &columnas)?;
 
             let idx = self.indice_base[base];
+            // `self.espacio(base)?` dos líneas arriba ya garantiza `Some`.
+            #[allow(clippy::unwrap_used)]
             let hoja_idx = self.bases[idx].hoja_idx.unwrap();
             let hoja = &mut self.hojas[hoja_idx];
             hoja.tmp.escribir(xml.as_bytes())?;
@@ -487,6 +502,9 @@ impl EscritorXlsx {
             .write_all(br#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">"#)?;
         self.zip_mut().write_all(dimension.as_bytes())?;
         self.zip_mut().write_all(b"<sheetData>")?;
+        // Mismo invariante que `zip_mut` (no se puede usar `zip_mut()` acá
+        // directamente: entraría en conflicto de préstamo con `self.hojas`).
+        #[allow(clippy::expect_used)]
         let zip = self.zip.as_mut().expect("EscritorXlsx: zip ya finalizado");
         self.hojas[hoja_idx].tmp.volcar_en(zip)?;
         self.zip_mut().write_all(b"</sheetData></worksheet>")?;

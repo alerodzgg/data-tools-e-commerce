@@ -59,6 +59,18 @@ pub fn verificar_columnas_reservadas<'a>(
 
 /// Rangos de precio (en USD, límites inclusive) → precio de lista asignado.
 /// Se recorren en orden; el primer rango que contiene el precio gana.
+///
+/// ATENCIÓN — tramo no monotónico sin explicar, detectado en la Ronda 8 de
+/// auditoría y aún pendiente de confirmación de negocio: `(175, 179) →
+/// 16980` es seguido por `(180, 184) → 16195` (BAJA) y luego `(185, 189) →
+/// 16680` (vuelve a subir). En cualquier otro tramo de la tabla el precio de
+/// lista sube o se mantiene a medida que sube el rango de precio de compra
+/// — este es el único que no. Puede ser una regla de negocio real (p. ej.
+/// un ajuste puntual de margen en ese tramo) o un error de captura; no se
+/// modifica sin que alguien de negocio lo confirme. El test
+/// `tramo_175_189_mantiene_su_forma_no_monotonica_conocida` FIJA el
+/// comportamiento actual — si cambia, debe ser un cambio deliberado de esta
+/// tabla, no un efecto secundario de otro fix.
 pub static RANGOS_PRECIOS: &[((i64, i64), i64)] = &[
     ((1, 14), 5749),
     ((15, 19), 6472),
@@ -182,5 +194,46 @@ mod tests {
         assert_eq!(precio_de_rango(1025), Some(71628));
         assert_eq!(precio_de_rango(1026), None);
         assert_eq!(precio_de_rango(0), None);
+    }
+
+    #[test]
+    fn tramo_175_189_mantiene_su_forma_no_monotonica_conocida() {
+        // Ver el comentario de `RANGOS_PRECIOS`: este tramo sube-baja-sube
+        // sin explicación documentada, pendiente de confirmación de negocio
+        // desde la Ronda 8 de auditoría. Este test no valida que el
+        // comportamiento sea CORRECTO — solo fija que sea el mismo, para que
+        // un cambio futuro a la tabla (o a `precio_de_rango`) lo toque de
+        // forma deliberada y no como efecto secundario de otra cosa.
+        // Si estas tres aserciones empiezan a fallar porque la tabla ya se
+        // corrigió a monotónica, actualizar este test (no borrarlo) para
+        // reflejar la nueva forma confirmada por negocio.
+        assert_eq!(precio_de_rango(177), Some(16980));
+        assert_eq!(precio_de_rango(182), Some(16195));
+        assert_eq!(precio_de_rango(187), Some(16680));
+    }
+
+    #[test]
+    fn rangos_precios_es_monotonico_no_decreciente_salvo_el_tramo_175_189_ya_documentado() {
+        // Guarda de regresión para el RESTO de la tabla: si un futuro cambio
+        // introdujera otra baja no explicada en cualquier otro tramo, este
+        // test debe fallar y forzar la misma pregunta que ya se hizo para
+        // 175-189 (¿regla de negocio real o error de captura?), en vez de
+        // que quede sin detectar hasta que alguien lo note en producción.
+        let excepcion_conocida = ((180, 184), 16195i64);
+        let mut anterior: Option<i64> = None;
+        for &(rango, valor) in RANGOS_PRECIOS {
+            if (rango, valor) == excepcion_conocida {
+                anterior = Some(valor);
+                continue;
+            }
+            if let Some(prev) = anterior {
+                assert!(
+                    valor >= prev,
+                    "tramo {rango:?} (valor {valor}) baja respecto al anterior ({prev}) \
+                     y no es la excepción ya documentada (180,184) — ¿nueva anomalía sin confirmar?"
+                );
+            }
+            anterior = Some(valor);
+        }
     }
 }

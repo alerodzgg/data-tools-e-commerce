@@ -65,7 +65,7 @@ fn ejecutar_modo(
 
     if resultado? {
         app_shell::success(&format!(
-            "Procesamiento completado en {:.2} segundos.",
+            "Listo: procesado en {:.2} segundos.",
             inicio.elapsed().as_secs_f64()
         ));
     }

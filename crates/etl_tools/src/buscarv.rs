@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use commerce_core::{concatenar_vertical, CoreResult};
+use commerce_core::{concatenar_vertical, CoreResult, RutaEscritaReal};
 use polars::prelude::*;
 
 use crate::coincidencia_parcial::rellenar_texto;
@@ -114,7 +114,13 @@ pub fn renombrar_traidas(
 /// (`lookup`, ya con los nombres de salida aplicados y una columna `_hit`
 /// booleana a `true`), cruzando por clave normalizada (LEFT JOIN). Sin
 /// coincidencia → celdas vacías. Devuelve (filas_escritas, filas_con_match,
-/// filas_totales).
+/// filas_totales, ruta_real).
+///
+/// `ruta_real` es la ruta EFECTIVA donde escribió `EscritorXlsx` — puede
+/// diferir de `ruta_salida` si la redirigió por una colisión (p. ej. un
+/// temporal rancio de una corrida anterior interrumpida). Quien vaya a
+/// sobrescribir el archivo original con el resultado DEBE usar esta ruta,
+/// nunca `ruta_salida` directamente.
 #[allow(clippy::too_many_arguments)]
 pub fn buscarv(
     base: &Path,
@@ -127,56 +133,68 @@ pub fn buscarv(
     ruta_salida: &Path,
     avisar: impl FnMut(&str),
     mut progreso: impl FnMut(u64),
-) -> CoreResult<(usize, u64, u64)> {
+) -> CoreResult<(usize, u64, u64, RutaEscritaReal)> {
     let mut columnas_salida = salida_traer.to_vec();
     columnas_salida.extend(cols_base.iter().cloned());
 
     let mut escritor = nuevo_escritor(ruta_salida, columnas_salida.clone())?;
-    let chunks = iter_hojas_valores(std::slice::from_ref(&base.to_path_buf()), excluir_base, avisar)?;
-    let mut filas_total = 0u64;
-    let mut filas_match = 0u64;
+    let ruta_real = RutaEscritaReal::nueva(escritor.ruta.clone());
 
-    for chunk in chunks {
-        let n = chunk.height() as u64;
-        let preparado = preparar_chunk_clave(&chunk, cols_base, clave_base)?;
-        let claves: Vec<String> = columna_texto_o_vacia(&preparado, clave_base)?
-            .iter()
-            .map(|v| clave_limpia_de(v.as_deref()))
-            .collect();
-        let mut preparado = preparado;
-        preparado.with_column(Column::new("clave_limpia".into(), claves))?;
+    let resultado = (|| -> CoreResult<(usize, u64, u64)> {
+        let chunks = iter_hojas_valores(std::slice::from_ref(&base.to_path_buf()), excluir_base, avisar)?;
+        let mut filas_total = 0u64;
+        let mut filas_match = 0u64;
 
-        let mut unido = preparado.join(
-            lookup,
-            ["clave_limpia"],
-            ["clave_limpia"],
-            JoinArgs::new(JoinType::Left),
-            None,
-        )?;
-        let hit: Vec<bool> = unido
-            .column("_hit")?
-            .bool()?
-            .iter()
-            .map(|v| v.unwrap_or(false))
-            .collect();
-        filas_match += hit.iter().filter(|v| **v).count() as u64;
-        rellenar_texto(&mut unido, salida_traer)?;
+        for chunk in chunks {
+            let n = chunk.height() as u64;
+            let preparado = preparar_chunk_clave(&chunk, cols_base, clave_base)?;
+            let claves: Vec<String> = columna_texto_o_vacia(&preparado, clave_base)?
+                .iter()
+                .map(|v| clave_limpia_de(v.as_deref()))
+                .collect();
+            let mut preparado = preparado;
+            preparado.with_column(Column::new("clave_limpia".into(), claves))?;
 
-        let salida = if solo_match {
-            let mascara = BooleanChunked::from_iter_values("m".into(), hit.into_iter());
-            unido.filter(&mascara)?.select(columnas_salida.clone())?
-        } else {
-            unido.select(columnas_salida.clone())?
-        };
-        if salida.height() > 0 {
-            escritor.escribir(&salida, None)?;
+            let mut unido = preparado.join(
+                lookup,
+                ["clave_limpia"],
+                ["clave_limpia"],
+                JoinArgs::new(JoinType::Left),
+                None,
+            )?;
+            let hit: Vec<bool> = unido
+                .column("_hit")?
+                .bool()?
+                .iter()
+                .map(|v| v.unwrap_or(false))
+                .collect();
+            filas_match += hit.iter().filter(|v| **v).count() as u64;
+            rellenar_texto(&mut unido, salida_traer)?;
+
+            let salida = if solo_match {
+                let mascara = BooleanChunked::from_iter_values("m".into(), hit.into_iter());
+                unido.filter(&mascara)?.select(columnas_salida.clone())?
+            } else {
+                unido.select(columnas_salida.clone())?
+            };
+            if salida.height() > 0 {
+                escritor.escribir(&salida, None)?;
+            }
+            filas_total += n;
+            progreso(n);
         }
-        filas_total += n;
-        progreso(n);
-    }
 
-    escritor.cerrar()?;
-    Ok((escritor.total, filas_match, filas_total))
+        escritor.cerrar()?;
+        Ok((escritor.total, filas_match, filas_total))
+    })();
+
+    match resultado {
+        Ok((total, filas_match, filas_total)) => Ok((total, filas_match, filas_total, ruta_real)),
+        Err(error) => {
+            let _ = escritor.abortar();
+            Err(error)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -284,7 +302,7 @@ mod tests {
         lookup.with_column(Column::new("_hit".into(), vec![true; lookup.height()]))?;
 
         let ruta_salida = tmp.path().join("out.xlsx");
-        let (total, filas_match, filas_total) = buscarv(
+        let (total, filas_match, filas_total, ruta_real) = buscarv(
             &base_archivo,
             &cols_base,
             "Clave",
@@ -299,6 +317,7 @@ mod tests {
         assert_eq!(total, 2);
         assert_eq!(filas_match, 1);
         assert_eq!(filas_total, 2);
+        assert_eq!(ruta_real.as_path(), ruta_salida);
 
         let hojas = commerce_core::iter_hojas_xlsx(&ruta_salida, None, |_| {});
         let info: Vec<_> = hojas[0]
@@ -308,6 +327,68 @@ mod tests {
             .map(|v| v.unwrap_or("").to_string())
             .collect();
         assert_eq!(info, vec!["valorX", ""]);
+        Ok(())
+    }
+
+    #[test]
+    fn buscarv_devuelve_la_ruta_real_cuando_un_temporal_rancio_fuerza_una_redireccion() -> CoreResult<()> {
+        // Mismo bug que en `duplicados.rs`: si la ruta pedida ya existe (un
+        // temporal `__tmp_buscarv.xlsx` de una corrida anterior
+        // interrumpida), `EscritorXlsx` escribe en "(1).xlsx" — el llamador
+        // que va a sobrescribir el archivo base con el resultado necesita
+        // esa ruta real, no la pedida.
+        let tmp = tempfile::tempdir().unwrap();
+        let tabla_archivo = tmp.path().join("tabla.xlsx");
+        escribir_libro(&tabla_archivo, &[["Clave", "Info"], ["K1", "valorX"]]);
+        let base_archivo = tmp.path().join("base.xlsx");
+        escribir_libro(&base_archivo, &[["Sku", "Clave"], ["A", "K1"]]);
+
+        let cols_base = vec!["Sku".to_string(), "Clave".to_string()];
+        let (salida_traer, renombrar) = renombrar_traidas(&cols_base, &["Info".to_string()]);
+        let mut lookup = cargar_tabla_busqueda(
+            &tabla_archivo,
+            "Clave",
+            &["Info".to_string()],
+            false,
+            None,
+            |_| {},
+        )?
+        .lazy()
+        .rename(
+            renombrar.keys().cloned().collect::<Vec<_>>(),
+            renombrar.values().cloned().collect::<Vec<_>>(),
+            true,
+        )
+        .collect()?;
+        lookup.with_column(Column::new("_hit".into(), vec![true; lookup.height()]))?;
+
+        let ruta_pedida = tmp.path().join("base__tmp_buscarv.xlsx");
+        std::fs::write(&ruta_pedida, b"basura de una corrida anterior interrumpida").unwrap();
+
+        let (total, _filas_match, _filas_total, ruta_real) = buscarv(
+            &base_archivo,
+            &cols_base,
+            "Clave",
+            &lookup,
+            &salida_traer,
+            None,
+            false,
+            &ruta_pedida,
+            |_| {},
+            |_| {},
+        )?;
+
+        assert_eq!(total, 1);
+        assert_ne!(
+            ruta_real.as_path(),
+            ruta_pedida,
+            "debió redirigir, esquivando el temporal rancio"
+        );
+        assert_eq!(
+            std::fs::read(&ruta_pedida).unwrap(),
+            b"basura de una corrida anterior interrumpida",
+            "el temporal rancio no debe tocarse"
+        );
         Ok(())
     }
 }

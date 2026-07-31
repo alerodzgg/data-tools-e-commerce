@@ -245,6 +245,27 @@ pub fn columnas_union(
     columnas
 }
 
+/// Unión, en orden de primera aparición, de las columnas de bloques YA
+/// CARGADOS en memoria (p. ej. los que devuelve [`iter_hojas_xlsx`]) — sin
+/// abrir ningún archivo. Para un llamador que de todos modos va a cargar los
+/// datos completos, esto reemplaza a [`columnas_union`] sin la apertura
+/// extra que antes hacía falta solo para leer las cabeceras (calamine no
+/// soporta leer solo la cabecera sin materializar la hoja completa, así que
+/// esa apertura "solo para columnas" costaba lo mismo que la de los datos).
+pub fn columnas_union_de_bloques(bloques: &[DataFrame]) -> Vec<String> {
+    let mut columnas: Vec<String> = Vec::new();
+    let mut vistas: HashSet<String> = HashSet::new();
+    for bloque in bloques {
+        for nombre in bloque.get_column_names() {
+            let nombre = nombre.to_string();
+            if vistas.insert(nombre.clone()) {
+                columnas.push(nombre);
+            }
+        }
+    }
+    columnas
+}
+
 /// Filas de datos totales (para el total de las barras de progreso). XLSX
 /// vía metadatos de la hoja (sin materializar los datos), saltando las hojas
 /// excluidas. Los CSV se cuentan con un `scan` + `len()` perezoso.
@@ -377,6 +398,17 @@ mod tests {
             !avisos.is_empty(),
             "debe avisar que el archivo no se pudo abrir, no quedarse en silencio"
         );
+    }
+
+    #[test]
+    fn columnas_union_de_bloques_dedup_en_orden_de_primera_aparicion() -> CoreResult<()> {
+        let a = df!("A" => ["1"], "B" => ["2"])?;
+        let b = df!("B" => ["3"], "C" => ["4"])?;
+        assert_eq!(
+            columnas_union_de_bloques(&[a, b]),
+            vec!["A".to_string(), "B".to_string(), "C".to_string()]
+        );
+        Ok(())
     }
 
     #[allow(dead_code)]

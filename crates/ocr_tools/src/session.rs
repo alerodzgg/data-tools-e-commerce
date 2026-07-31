@@ -75,12 +75,24 @@ impl Detector {
     /// cada uno de forma `(H/2, W/2)`.
     pub fn forward(&mut self, input: Array3<f32>) -> ort::Result<(Array2<f32>, Array2<f32>)> {
         let (c, h, w) = input.dim();
+        // Agregar una dimensión de batch=1 a un array de (c,h,w) elementos
+        // conocidos nunca cambia el total de elementos: no puede fallar.
+        #[allow(clippy::expect_used)]
         let batched: Array4<f32> = input.into_shape_with_order((1, c, h, w)).expect("shape valido");
         let tensor = Tensor::from_array(batched)?;
         let outputs = self.session.run(ort::inputs!["input" => tensor])?;
         let y = salida_output(&outputs)?.try_extract_array::<f32>()?;
-        // y: (1, dim1, dim2, 2)
+        // y: (1, dim1, dim2, 2) — validar antes de indexar: un modelo ONNX
+        // exportado con otra forma de salida (p. ej. otra versión, o
+        // `assets_dir()` apuntando a un modelo incorrecto) no debe tumbar el
+        // proceso completo con un panic de índice fuera de rango, sino
+        // devolver un error de dominio como ya hace `salida_output`.
         let shape = y.shape();
+        if shape.len() != 4 || shape[0] != 1 || shape[3] < 2 {
+            return Err(ort::Error::new(format!(
+                "forma de salida del detector inesperada: se esperaba (1, alto, ancho, >=2), se obtuvo {shape:?}"
+            )));
+        }
         let (dim1, dim2) = (shape[1], shape[2]);
         let mut text_score = Array2::<f32>::zeros((dim1, dim2));
         let mut link_score = Array2::<f32>::zeros((dim1, dim2));
@@ -112,15 +124,28 @@ impl Recognizer {
     /// Devuelve las probabilidades tras softmax, forma `(seq_len, num_class)`.
     pub fn forward(&mut self, input: Array3<f32>) -> ort::Result<Array2<f32>> {
         let (c, h, w) = input.dim();
+        // Agregar una dimensión de batch=1 a un array de (c,h,w) elementos
+        // conocidos nunca cambia el total de elementos: no puede fallar.
+        #[allow(clippy::expect_used)]
         let batched: Array4<f32> = input.into_shape_with_order((1, c, h, w)).expect("shape valido");
         let tensor = Tensor::from_array(batched)?;
         let outputs = self.session.run(ort::inputs!["input" => tensor])?;
         let logits = salida_output(&outputs)?.try_extract_array::<f32>()?;
-        // logits: (1, seq_len, num_class) → softmax sobre el ultimo eje, quitando el batch.
+        // logits: (1, seq_len, num_class) → softmax sobre el ultimo eje,
+        // quitando el batch. Igual que en `Detector::forward`: un modelo con
+        // otra forma de salida debe devolver un error, no panickear.
+        let shape = logits.shape();
+        if shape.len() != 3 || shape[0] != 1 {
+            return Err(ort::Error::new(format!(
+                "forma de salida del reconocedor inesperada: se esperaba (1, seq_len, num_class), se obtuvo {shape:?}"
+            )));
+        }
         let logits = logits.index_axis(ndarray::Axis(0), 0).to_owned();
-        let logits = logits
-            .into_dimensionality::<ndarray::Ix2>()
-            .expect("forma (seq_len, num_class)");
+        let logits = logits.into_dimensionality::<ndarray::Ix2>().map_err(|e| {
+            ort::Error::new(format!(
+                "no se pudo interpretar la salida del reconocedor como (seq_len, num_class): {e}"
+            ))
+        })?;
         Ok(softmax_last_axis(logits))
     }
 }

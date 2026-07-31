@@ -54,12 +54,26 @@ fn tomar_marcadas_de_guion<T>(mensaje: &str, opciones: Vec<T>) -> Vec<T> {
 struct ArchivoOpcion {
     ruta: PathBuf,
     mostrar_carpeta: bool,
+    // Mostrar solo el NOMBRE de la carpeta padre no alcanza cuando dos
+    // archivos comparten nombre de archivo Y nombre de carpeta padre pero
+    // están en rutas completas distintas (p. ej. ".../ProyectoA/lote/x.xlsx"
+    // y ".../ProyectoB/lote/x.xlsx"): ambas opciones se verían idénticas en
+    // el menú. En ese caso se muestra la ruta del padre completa en vez de
+    // solo su nombre.
+    ruta_padre_ambigua: bool,
 }
 
 impl fmt::Display for ArchivoOpcion {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let nombre = self.ruta.file_name().unwrap_or_default().to_string_lossy();
-        if self.mostrar_carpeta {
+        if self.ruta_padre_ambigua {
+            let carpeta = self
+                .ruta
+                .parent()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default();
+            write!(f, "{nombre}  ({carpeta})")
+        } else if self.mostrar_carpeta {
             let carpeta = self
                 .ruta
                 .parent()
@@ -73,8 +87,17 @@ impl fmt::Display for ArchivoOpcion {
     }
 }
 
+fn nombre_padre(ruta: &std::path::Path) -> std::ffi::OsString {
+    ruta.parent()
+        .and_then(|p| p.file_name())
+        .unwrap_or_default()
+        .to_os_string()
+}
+
 /// Arma las opciones de menú marcando `mostrar_carpeta` solo para los
-/// archivos cuyo nombre se repite en `archivos`.
+/// archivos cuyo nombre se repite en `archivos`, y `ruta_padre_ambigua`
+/// cuando además el nombre de la carpeta padre también se repite entre esos
+/// mismos archivos (ver comentario de [`ArchivoOpcion`]).
 fn opciones_de_archivos(archivos: Vec<PathBuf>) -> Vec<ArchivoOpcion> {
     let mut conteo: HashMap<std::ffi::OsString, usize> = HashMap::new();
     for ruta in &archivos {
@@ -82,17 +105,29 @@ fn opciones_de_archivos(archivos: Vec<PathBuf>) -> Vec<ArchivoOpcion> {
             .entry(ruta.file_name().unwrap_or_default().to_os_string())
             .or_insert(0) += 1;
     }
+    let mut conteo_padre: HashMap<(std::ffi::OsString, std::ffi::OsString), usize> = HashMap::new();
+    for ruta in &archivos {
+        let clave = (
+            ruta.file_name().unwrap_or_default().to_os_string(),
+            nombre_padre(ruta),
+        );
+        *conteo_padre.entry(clave).or_insert(0) += 1;
+    }
     archivos
         .into_iter()
         .map(|ruta| {
-            let repetido = conteo
-                .get(ruta.file_name().unwrap_or_default())
-                .copied()
-                .unwrap_or(0)
-                > 1;
+            let nombre = ruta.file_name().unwrap_or_default().to_os_string();
+            let repetido = conteo.get(&nombre).copied().unwrap_or(0) > 1;
+            let ruta_padre_ambigua = repetido
+                && conteo_padre
+                    .get(&(nombre, nombre_padre(&ruta)))
+                    .copied()
+                    .unwrap_or(0)
+                    > 1;
             ArchivoOpcion {
                 ruta,
                 mostrar_carpeta: repetido,
+                ruta_padre_ambigua,
             }
         })
         .collect()
@@ -315,6 +350,24 @@ mod tests {
         assert_eq!(opciones[0].to_string(), "data.xlsx  (carpetaA)");
         assert_eq!(opciones[1].to_string(), "data.xlsx  (carpetaB)");
         assert_eq!(opciones[2].to_string(), "unico.xlsx");
+    }
+
+    #[test]
+    fn opciones_de_archivos_usa_la_ruta_padre_completa_si_el_nombre_de_la_carpeta_tambien_se_repite() {
+        // "lote" se repite como nombre de carpeta padre en ambos: mostrar
+        // solo "(lote)" en los dos no los distinguiría en el menú.
+        let opciones = opciones_de_archivos(vec![
+            PathBuf::from("ProyectoA/lote/data.xlsx"),
+            PathBuf::from("ProyectoB/lote/data.xlsx"),
+        ]);
+        assert_eq!(
+            opciones[0].to_string(),
+            format!("data.xlsx  ({})", PathBuf::from("ProyectoA/lote").display())
+        );
+        assert_eq!(
+            opciones[1].to_string(),
+            format!("data.xlsx  ({})", PathBuf::from("ProyectoB/lote").display())
+        );
     }
 
     #[test]

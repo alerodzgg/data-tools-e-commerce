@@ -43,7 +43,13 @@ fn servir_imagen(bytes: Vec<u8>) -> String {
     format!("http://127.0.0.1:{puerto}/coming_soon.jpg")
 }
 
-#[tokio::test]
+// `flavor = "multi_thread"`: la inferencia OCR real usa
+// `tokio::task::block_in_place` (ver el comentario en
+// `async_processor::run_async`), que entra en pánico bajo el runtime
+// `current_thread` que usa `#[tokio::test]` por defecto — el mismo
+// requisito que ya cumple `#[tokio::main]` en `bin/ocr_tools.rs` (multi-hilo
+// por defecto).
+#[tokio::test(flavor = "multi_thread")]
 async fn pipeline_async_completo_rechaza_el_placeholder_via_ocr_real() {
     let bytes = std::fs::read(manifest_dir().join("tests/fixtures/coming_soon.png")).unwrap();
     let url = servir_imagen(bytes);

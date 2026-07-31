@@ -155,13 +155,20 @@ pub fn get_det_boxes_core(
         let side12 = dist(corners[1], corners[2]);
         let box_ratio = side01.max(side12) / (side01.min(side12) + 1e-5);
         if (1.0 - box_ratio).abs() <= 0.1 {
-            let l = points.iter().map(|p| p.x).min().unwrap() as f32;
-            let r = points.iter().map(|p| p.x).max().unwrap() as f32;
-            let t = points.iter().map(|p| p.y).min().unwrap() as f32;
-            let b = points.iter().map(|p| p.y).max().unwrap() as f32;
+            // El `continue` de la línea 143 ya garantiza `points` no vacío.
+            #[allow(clippy::unwrap_used)]
+            let (l, r, t, b) = (
+                points.iter().map(|p| p.x).min().unwrap() as f32,
+                points.iter().map(|p| p.x).max().unwrap() as f32,
+                points.iter().map(|p| p.y).min().unwrap() as f32,
+                points.iter().map(|p| p.y).max().unwrap() as f32,
+            );
             corners = [(l, t), (r, t), (r, b), (l, b)];
         }
 
+        // `corners` es un array de 4 elementos: `min_by` sobre su iterador
+        // nunca da `None`.
+        #[allow(clippy::unwrap_used)]
         let start_idx = corners
             .iter()
             .enumerate()

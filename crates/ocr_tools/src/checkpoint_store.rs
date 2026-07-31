@@ -67,6 +67,10 @@ impl CheckpointStore {
         let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
         let mut file = OpenOptions::new().create(true).append(true).open(&self.path)?;
         for entry in entries {
+            // `CheckpointEntry` es campos primitivos (String/bool/i64) sin
+            // claves de mapa no-String ni ciclos: `serde_json` no puede
+            // fallar en serializar esta forma.
+            #[allow(clippy::expect_used)]
             let linea = serde_json::to_string(entry).expect("CheckpointEntry siempre serializa");
             writeln!(file, "{linea}")?;
         }

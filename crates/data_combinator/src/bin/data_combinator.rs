@@ -215,12 +215,12 @@ fn ejecutar() -> AppResult<()> {
 
     if rutas.len() == 1 {
         app_shell::success(&format!(
-            "¡Listo! {filas} filas combinadas en '{}'.",
+            "Listo: {filas} filas combinadas en '{}'.",
             rutas[0].file_name().unwrap_or_default().to_string_lossy()
         ));
     } else {
         app_shell::success(&format!(
-            "¡Listo! {filas} filas combinadas en {} archivos: '{}' … '{}'.",
+            "Listo: {filas} filas combinadas en {} archivos: '{}' … '{}'.",
             rutas.len(),
             rutas[0].file_name().unwrap_or_default().to_string_lossy(),
             rutas[rutas.len() - 1]

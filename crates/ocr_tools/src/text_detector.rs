@@ -134,6 +134,10 @@ impl TextDetector {
             .ignore_patterns
             .iter()
             .map(|p| {
+                // `ignore_patterns` solo se construye hoy vía el `Default`
+                // de `TextDetectorConfig` (patrones literales fijos, no
+                // datos de usuario/archivo) — siempre compilan.
+                #[allow(clippy::expect_used)]
                 RegexBuilder::new(p)
                     .case_insensitive(true)
                     .build()

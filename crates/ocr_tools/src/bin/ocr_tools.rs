@@ -309,6 +309,10 @@ async fn insertar_imagenes_en_archivos(archivos: &[PathBuf]) -> AppResult<()> {
             Err(MotivoSinProcesar::ArchivoCorrupto) => app_shell::error(&format!(
                 "'{nombre}': no se pudo abrir (¿está corrupto o no es un .xlsx válido?)."
             )),
+            Err(MotivoSinProcesar::ArchivoDemasiadoGrande) => app_shell::error(&format!(
+                "'{nombre}': excede el límite de tamaño/descompresión permitido para insertar imágenes. \
+                 No se procesa."
+            )),
             Err(MotivoSinProcesar::FalloEscritura) => app_shell::error(&format!(
                 "'{nombre}': se procesó pero no se pudo guardar el resultado en '{}'.",
                 destino.file_name().unwrap_or_default().to_string_lossy()

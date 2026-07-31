@@ -56,7 +56,14 @@ pub fn materialize(
         if local >= 0 && (local as usize) < n {
             let local = local as usize;
             aprobada[local] = cr.approved;
-            motivo_por_col.get_mut(cr.col.as_str()).unwrap()[local] = cr.reason.clone();
+            // `aprobada_por_col`/`motivo_por_col` se poblaron con el MISMO
+            // conjunto de claves (`url_columns`, arriba); el `get_mut` de
+            // `aprobada` dos líneas arriba ya confirmó que `cr.col` es una
+            // clave válida.
+            #[allow(clippy::unwrap_used)]
+            {
+                motivo_por_col.get_mut(cr.col.as_str()).unwrap()[local] = cr.reason.clone();
+            }
         }
     }
 

@@ -549,9 +549,26 @@ impl AsyncBatchProcessor {
             (Some(batcher), Some(reader)) => {
                 let pipeline_ref = &*pipeline;
                 let despacho = batcher.run(|ctxs| {
-                    ctxs.iter()
-                        .map(|ctx| veredicto_de_resultado_ocr(pipeline_ref.run_slow(ctx, reader)))
-                        .collect()
+                    // `run_slow` es CPU-bound (inferencia ONNX real) y puede
+                    // panickear ante un modelo/dato inesperado (p. ej. una
+                    // forma de tensor que `session.rs` no anticipó). Antes
+                    // corría inline sin aislamiento: un panic tumbaba el
+                    // proceso completo y perdía hasta `checkpoint_every`
+                    // resultados aún no volcados a disco. `block_in_place`
+                    // libera al scheduler de tokio mientras corre (requiere
+                    // el runtime multi-thread que usa `#[tokio::main]` en
+                    // `bin/ocr_tools.rs`); `catch_unwind` limita el daño de un
+                    // panic a la imagen que lo causó — el resto del lote y el
+                    // checkpoint siguen su curso normal.
+                    tokio::task::block_in_place(|| {
+                        ctxs.iter()
+                            .map(|ctx| {
+                                veredicto_aislando_panic(std::panic::AssertUnwindSafe(|| {
+                                    pipeline_ref.run_slow(ctx, reader)
+                                }))
+                            })
+                            .collect()
+                    })
                 });
                 tokio::join!(consumo, despacho);
             }
@@ -571,6 +588,24 @@ fn veredicto_de_resultado_ocr(resultado: ort::Result<PipelineVerdict>) -> Pipeli
         approved: false,
         reasons: vec![format!("Fallo de inferencia OCR: {error}")],
     })
+}
+
+/// Corre `inferencia` (una llamada a `run_slow` para una sola imagen) tras
+/// `catch_unwind`: un panic durante la inferencia OCR (p. ej. un modelo con
+/// una forma de tensor inesperada que se cuele más allá de la validación de
+/// `session.rs`) se traduce en un rechazo para ESA imagen, en vez de
+/// propagarse y tumbar el proceso completo — perdiendo, de paso, el resto
+/// del lote y cualquier resultado del checkpoint aún no volcado a disco.
+fn veredicto_aislando_panic(
+    inferencia: impl FnOnce() -> ort::Result<PipelineVerdict> + std::panic::UnwindSafe,
+) -> PipelineVerdict {
+    match std::panic::catch_unwind(inferencia) {
+        Ok(resultado) => veredicto_de_resultado_ocr(resultado),
+        Err(_panic) => PipelineVerdict {
+            approved: false,
+            reasons: vec!["Fallo interno (panic) durante la inferencia OCR".to_string()],
+        },
+    }
 }
 
 #[cfg(test)]
@@ -907,5 +942,31 @@ mod tests {
     fn si_la_inferencia_ocr_no_falla_el_veredicto_se_propaga_intacto() {
         let veredicto = veredicto_de_resultado_ocr(Ok(verdicto(true)));
         assert!(veredicto.approved);
+    }
+
+    #[test]
+    fn un_panic_durante_la_inferencia_se_traduce_en_rechazo_en_vez_de_propagarse() {
+        // Antes de este fix, un panic dentro de `run_slow` (p. ej. un modelo
+        // ONNX con una forma de tensor inesperada) tumbaba el proceso
+        // completo — perdiendo el resto del lote y cualquier resultado del
+        // checkpoint aún no volcado a disco. `veredicto_aislando_panic` debe
+        // contener el panic y devolver un rechazo, sin propagarlo.
+        let veredicto = veredicto_aislando_panic(std::panic::AssertUnwindSafe(
+            || -> ort::Result<PipelineVerdict> { panic!("panic simulado de inferencia OCR") },
+        ));
+        assert!(!veredicto.approved);
+        assert!(veredicto.reasons[0].contains("panic"));
+    }
+
+    #[test]
+    fn sin_panic_veredicto_aislando_panic_se_comporta_como_veredicto_de_resultado_ocr() {
+        let veredicto = veredicto_aislando_panic(std::panic::AssertUnwindSafe(|| Ok(verdicto(true))));
+        assert!(veredicto.approved);
+
+        let veredicto = veredicto_aislando_panic(std::panic::AssertUnwindSafe(|| {
+            Err(ort::Error::new("fallo real, no panic"))
+        }));
+        assert!(!veredicto.approved);
+        assert!(veredicto.reasons[0].contains("fallo real, no panic"));
     }
 }

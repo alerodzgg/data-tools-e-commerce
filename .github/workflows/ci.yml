@@ -58,4 +58,4 @@ jobs:
         with:
           key: ${{ matrix.crate }}
       - run: cargo build -p ${{ matrix.crate }} --all-targets
-      - run: cargo test -p ${{ matrix.crate }}
+      - run: cargo test -p ${{ matrix.crate }} --all-targets

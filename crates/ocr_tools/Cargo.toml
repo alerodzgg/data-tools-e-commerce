@@ -20,6 +20,7 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "net", "io-util", "test-util"] }
 umya-spreadsheet = "2.3.3"
+zip = { workspace = true }
 
 [features]
 # Solo para los tests de integración de tests/: exponen un constructor que

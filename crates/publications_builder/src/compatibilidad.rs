@@ -1,18 +1,31 @@
+//! Orquestación de 'Compatibilidades'/'Comprimidas': JOIN INVERTIDO en
+//! streaming entre Hoja1 y las hojas de compatibilidad, más el motor de I/O
+//! particionado (dedup GLOBAL de 'Combinada' vía
+//! `commerce_core::AcumuladorParticionado`). El parsing puro vive en
+//! [`parsing`] y las reglas de negocio de filtrado en [`filtros`] — antes
+//! los tres vivían mezclados en un único archivo de 1552 líneas (Ronda 9 de
+//! auditoría).
+
 use std::collections::{HashMap, HashSet};
-use std::hash::BuildHasher;
 use std::ops::Not;
-use std::path::{Path, PathBuf};
-use std::sync::LazyLock;
+use std::path::Path;
 
-use commerce_core::{concat_diagonal, tomar_filas, CoreResult, EscritorXlsx};
+use commerce_core::{AcumuladorParticionado, CoreResult, EscritorXlsx};
 use polars::prelude::*;
-use regex::Regex;
 
-use crate::comunes::{columna_precio2, columna_texto, RE_VIDEO};
-use crate::constantes::{
-    verificar_columnas_reservadas, COL_IMAGENES, COL_PRECIO, COL_START_URL, COL_TITULO,
-    LINEA_EN_MODELO_PATTERN,
+use crate::comunes::columna_texto;
+use crate::constantes::{verificar_columnas_reservadas, COL_PRECIO, COL_START_URL};
+
+mod filtros;
+mod parsing;
+
+pub use filtros::aplicar_filtros_combinada;
+pub use parsing::{
+    aplicar_sku_secuencial, columnas_a_combinar, limpiar_hoja_compat, limpiar_precio_hoja1,
+    preprocesar_hoja1, procesar_dataframe_compatibilidad,
 };
+
+use filtros::{escribir_bucket_procesadas, explotar_coincidencia};
 
 /// Modo de 'Compatibilidades' (el menú lo llama "Compatibilidades") vs
 /// 'Comprimidas' — antes viajaban como literales de texto sueltos por 6
@@ -28,504 +41,19 @@ pub enum ModoCompatibilidad {
     Comprimidas,
 }
 
-static RE_HASTA_DOLAR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^.*?\$").unwrap());
-static RE_DESDE_PUNTO: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\..*$").unwrap());
-static RE_LINEA_EN_MODELO: LazyLock<Regex> = LazyLock::new(|| Regex::new(LINEA_EN_MODELO_PATTERN).unwrap());
-static RE_PRIMER_TOKEN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(\S+)").unwrap());
-static RE_PUNTO_CERO: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\.0$").unwrap());
-static RE_ESPACIOS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").unwrap());
-static RE_NA_FINAL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"-NA$").unwrap());
-static RE_GUION_DIGITOS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(\d)-(\d)").unwrap());
-
-/// Precio vectorizado de Hoja1: lo que queda tras el primer '$' y antes del
-/// primer '.'; luego a entero (los no numéricos caen a 0). Distinto de
-/// [`crate::comunes::extraer_precio_entero`] (usado por 'unicas'/'amazon'):
-/// aquí el precio ya viene con formato `"$85.99"`, no dígitos sueltos.
-///
-/// Se descarta cualquier carácter no numérico ANTES de parsear (no solo
-/// `trim`): un separador de miles como `"$1,234.56"` dejaría `"1,234"` tras
-/// los dos recortes de arriba, que `"1,234".parse::<i64>()` rechazaría y
-/// caería en silencio a 0 en vez de 1234.
-pub fn limpiar_precio_hoja1(df: &DataFrame) -> CoreResult<DataFrame> {
-    let precios: Vec<i64> = columna_texto(df, COL_PRECIO)?
-        .iter()
-        .map(|v| {
-            let s = v.as_deref().unwrap_or("0");
-            let s = RE_HASTA_DOLAR.replace(s, "");
-            let s = RE_DESDE_PUNTO.replace(&s, "");
-            let solo_digitos: String = s.chars().filter(char::is_ascii_digit).collect();
-            solo_digitos.parse::<i64>().unwrap_or(0)
-        })
-        .collect();
-    let mut df = df.clone();
-    df.with_column(Column::new(COL_PRECIO.into(), precios))?;
-    Ok(df)
-}
-
-/// Limpia el precio de Hoja1, calcula `Precio2` y separa (válidas,
-/// eliminadas): se eliminan las filas con 'Opcion' no vacía o sin imágenes
-/// (todas vacías o con 'video'). A propósito NO usa
-/// [`crate::comunes::mask_sin_imagenes`]: aquí 'video' TAMBIÉN cuenta como
-/// "sin imagen", y sin columnas de imagen el default es NO descartar (los
-/// otros dos modos SÍ descartan).
-pub fn preprocesar_hoja1(df: &DataFrame) -> CoreResult<(DataFrame, DataFrame)> {
-    let mut df = df.clone();
-    if df.column(COL_PRECIO).is_ok() {
-        df = limpiar_precio_hoja1(&df)?;
-        // Se llama UNA sola vez sobre toda 'Hoja1' (no una vez por chunk):
-        // no hay riesgo de colisión entre llamadas, así que no hace falta
-        // un contador persistente acá.
-        let precio2 = columna_precio2(&df, COL_PRECIO, None)?;
-        df.with_column(Column::new("Precio2".into(), precio2))?;
-    }
-
-    let mask_opcion = crate::comunes::mask_opcion(&df)?;
-
-    let cols_img: Vec<&str> = COL_IMAGENES
-        .iter()
-        .copied()
-        .filter(|c| df.column(c).is_ok())
-        .collect();
-    let n = df.height();
-    let mask_img: Vec<bool> = if cols_img.is_empty() {
-        vec![false; n]
-    } else {
-        let mut todas_vacias = vec![true; n];
-        for c in cols_img {
-            for (i, v) in columna_texto(&df, c)?.iter().enumerate() {
-                let vacio_o_video = match v.as_deref() {
-                    None => true,
-                    Some(s) => s.is_empty() || RE_VIDEO.is_match(s),
-                };
-                if !vacio_o_video {
-                    todas_vacias[i] = false;
-                }
-            }
-        }
-        todas_vacias
-    };
-
-    let descartar: Vec<bool> = (0..n).map(|i| mask_opcion[i] || mask_img[i]).collect();
-    let mask_descartar = BooleanChunked::from_iter_values("m".into(), descartar.iter().copied());
-    let mask_validas: BooleanChunked = mask_descartar.clone().not();
-    Ok((df.filter(&mask_validas)?, df.filter(&mask_descartar)?))
-}
-
-/// Limpia UNA hoja de compatibilidad y la pasa toda a texto. En modo
-/// 'repetidas' limpia 'Linea' (quita '--') y, si se pidió borrarla, la
-/// elimina y depura los litros embebidos en 'Modelo'.
-pub fn limpiar_hoja_compat(
-    df: &DataFrame,
-    modo: ModoCompatibilidad,
-    borrar_linea: bool,
-) -> CoreResult<DataFrame> {
-    let mut df = df.clone();
-    if modo == ModoCompatibilidad::Repetidas {
-        let linea_col = df
-            .get_column_names()
-            .iter()
-            .find(|c| c.as_str().trim().eq_ignore_ascii_case("linea"))
-            .map(|s| s.to_string());
-        if let Some(ref col) = linea_col {
-            let valores: Vec<String> = columna_texto(&df, col)?
-                .into_iter()
-                .map(|v| v.unwrap_or_default().replace("--", ""))
-                .collect();
-            df.with_column(Column::new(col.as_str().into(), valores))?;
-        }
-        if borrar_linea {
-            if let Some(col) = &linea_col {
-                df = df.drop(col)?;
-            }
-            if df.column("Modelo").is_ok() {
-                let valores: Vec<String> = columna_texto(&df, "Modelo")?
-                    .into_iter()
-                    .map(|v| {
-                        RE_LINEA_EN_MODELO
-                            .replace_all(v.unwrap_or_default().as_str(), " ")
-                            .trim()
-                            .to_string()
-                    })
-                    .collect();
-                df.with_column(Column::new("Modelo".into(), valores))?;
-            }
-        }
-    }
-
-    for nombre in df.get_column_names_owned() {
-        let col = df.column(nombre.as_str())?;
-        if col.dtype() != &DataType::String {
-            let serie = col.as_materialized_series().cast(&DataType::String)?;
-            df.with_column(serie.with_name(nombre.clone()).into())?;
-        }
-    }
-    Ok(df)
-}
-
-/// Columnas que se concatenan en 'Combinada', según el modo.
-pub fn columnas_a_combinar(modo: ModoCompatibilidad, borrar_linea: bool) -> Vec<String> {
-    let mut columnas = vec![
-        "Cantidades".to_string(),
-        "Traducido".to_string(),
-        "Caracteristicas".to_string(),
-    ];
-    if modo == ModoCompatibilidad::Repetidas {
-        columnas.extend(["Marca", "Chasis", "Modelo"].map(String::from));
-        if !borrar_linea {
-            columnas.push("Linea".to_string());
-        }
-        columnas.push("Litros".to_string());
-    } else if modo == ModoCompatibilidad::Comprimidas {
-        columnas.push("Coincidencia".to_string());
-    }
-    columnas
-}
-
-/// Numera el SKU secuencial de forma GLOBAL y única en TODA la corrida.
-/// El SKU final es `base-N`, N = nº de aparición de esa base contando todas
-/// las filas ya procesadas (no solo el sub-bloque actual). `contador`
-/// (si `Some`) PERSISTE entre bloques: comparte el conteo global; si es
-/// `None`, numera 1-based solo dentro de `df`.
-pub fn aplicar_sku_secuencial(
-    df: &DataFrame,
-    contador: Option<&mut HashMap<String, u64>>,
-) -> CoreResult<DataFrame> {
-    if df.column("Sku").is_err() {
-        return Ok(df.clone());
-    }
-    let bases: Vec<String> = columna_texto(df, "Sku")?
-        .into_iter()
-        .map(|v| v.unwrap_or_default())
-        .collect();
-    let n = bases.len();
-
-    let mut vistos: HashMap<&str, u64> = HashMap::new();
-    let mut rank: Vec<u64> = Vec::with_capacity(n);
-    for b in &bases {
-        let c = vistos.entry(b.as_str()).or_insert(0);
-        *c += 1;
-        rank.push(*c);
-    }
-
-    let offsets: Vec<i64> = match &contador {
-        Some(c) => bases
-            .iter()
-            .map(|b| *c.get(b.as_str()).unwrap_or(&0) as i64)
-            .collect(),
-        None => vec![0; n],
-    };
-
-    if let Some(contador) = contador {
-        for (b, c) in vistos {
-            *contador.entry(b.to_string()).or_insert(0) += c;
-        }
-    }
-
-    let sku: Vec<String> = (0..n)
-        .map(|i| format!("{}-{}", bases[i], offsets[i] + rank[i] as i64))
-        .collect();
-    let mut df = df.clone();
-    df.with_column(Column::new("Sku".into(), sku))?;
-    Ok(df)
-}
-
-/// Procesa un lote para 'Compatibilidades'/'Comprimidas': Caracteristicas +
-/// Cantidades (a partir de Titulo), transformaciones comunes, SKU secuencial
-/// GLOBAL, limpieza de 'Litros' y generación de 'Combinada'.
-pub fn procesar_dataframe_compatibilidad(
-    df: &DataFrame,
-    columnas_a_combinar: &[String],
-    modificar_oem: bool,
-    contador_sku: Option<&mut HashMap<String, u64>>,
-) -> CoreResult<DataFrame> {
-    if df.height() == 0 {
-        return Ok(df.clone());
-    }
-    let mut df = df.clone();
-
-    if df.column(COL_TITULO).is_ok() {
-        df = crate::comunes::agregar_caracteristicas_y_cantidades(&df)?;
-    }
-
-    let extra_mojibake = ["Marca", "Chasis", "Modelo", "Linea", "Coincidencia", "Traducido"];
-    df = crate::comunes::aplicar_transformaciones_comunes(&df, modificar_oem, &extra_mojibake)?;
-
-    if df.column("Sku").is_ok() {
-        df = aplicar_sku_secuencial(&df, contador_sku)?;
-    }
-
-    if df.column("Litros").is_ok() {
-        let valores: Vec<String> = columna_texto(&df, "Litros")?
-            .into_iter()
-            .map(|v| {
-                let s = v.unwrap_or_default();
-                RE_PRIMER_TOKEN
-                    .find(s.trim())
-                    .map(|m| m.as_str().to_string())
-                    .unwrap_or_default()
-            })
-            .collect();
-        df.with_column(Column::new("Litros".into(), valores))?;
-    }
-
-    let existentes: Vec<&str> = columnas_a_combinar
-        .iter()
-        .map(String::as_str)
-        .filter(|c| df.column(c).is_ok())
-        .collect();
-    let combinada: Vec<String> = if existentes.is_empty() {
-        vec![String::new(); df.height()]
-    } else {
-        let columnas_vals: Vec<Vec<Option<String>>> = existentes
-            .iter()
-            .map(|c| columna_texto(&df, c))
-            .collect::<CoreResult<_>>()?;
-        (0..df.height())
-            .map(|i| {
-                let partes: Vec<String> = columnas_vals
-                    .iter()
-                    .map(|col| {
-                        RE_PUNTO_CERO
-                            .replace(col[i].as_deref().unwrap_or(""), "")
-                            .trim()
-                            .to_string()
-                    })
-                    .collect();
-                let unido = partes.join(" ");
-                RE_ESPACIOS.replace_all(&unido, " ").trim().to_string()
-            })
-            .collect()
-    };
-    df.with_column(Column::new("Combinada".into(), combinada))?;
-
-    Ok(df)
-}
-
-fn dedup_por_combinada_menor_precio2(df: &DataFrame) -> CoreResult<DataFrame> {
-    let opciones = SortMultipleOptions::default().with_nulls_last(true);
-    let ordenado = df.sort(["Precio2"], opciones)?;
-    Ok(ordenado.unique::<(), ()>(Some(&["Combinada".to_string()]), UniqueKeepStrategy::First, None)?)
-}
-
 /// Cuántas particiones de disco usa el dedup GLOBAL de 'Combinada' (ver
-/// [`AcumuladorProcesadas`]). Compatibilidades puede sumar decenas de
-/// millones de filas repartidas en muchas hojas/bloques: sin particionar, el
-/// dedup por menor 'Precio2' era solo LOCAL a cada sub-bloque de 250k filas —
-/// dos filas con la MISMA 'Combinada' que caían en bloques u hojas distintas
-/// nunca se comparaban entre sí y ambas sobrevivían.
+/// [`commerce_core::AcumuladorParticionado`]). Compatibilidades puede sumar
+/// decenas de millones de filas repartidas en muchas hojas/bloques: sin
+/// particionar, el dedup por menor 'Precio2' era solo LOCAL a cada
+/// sub-bloque de 250k filas — dos filas con la MISMA 'Combinada' que caían
+/// en bloques u hojas distintas nunca se comparaban entre sí y ambas
+/// sobrevivían.
 const PARTICIONES_DEDUP_COMBINADA: usize = 16;
 const FILAS_BUFFER_PARTICION_COMBINADA: usize = 1_000_000;
-
-/// Acumula en disco (particionado por hash de 'Combinada') las filas que
-/// pasaron los filtros y esperan el dedup por menor 'Precio2'. `agregar` se
-/// llama una vez por sub-bloque durante el streaming; `finalizar` relee cada
-/// partición COMPLETA, deduplica de verdad (ahora sí, entre TODOS los
-/// bloques/hojas) y escribe "Procesadas". Memoria acotada: cada partición
-/// vive en RAM una a la vez, nunca el archivo completo.
-struct AcumuladorProcesadas {
-    tmpdir: tempfile::TempDir,
-    n_part: usize,
-    buffer_part: Vec<Vec<DataFrame>>,
-    archivos_part: Vec<Vec<PathBuf>>,
-    contador_archivos: Vec<usize>,
-    buffer_filas: usize,
-    // Semilla aleatoria por CORRIDA (no por valor: todos los valores de esta
-    // misma corrida deben hashear de forma CONSISTENTE entre sí para caer
-    // siempre en la misma partición). `DefaultHasher::new()` a secas usa
-    // claves fijas (SipHash con clave (0,0)) — un archivo de entrada
-    // diseñado a propósito podría forzar que todo caiga en una sola
-    // partición, anulando el acotado de memoria que este particionado
-    // existe para garantizar. `RandomState::new()` sortea una semilla nueva
-    // una sola vez acá; `build_hasher()` la reusa para cada valor.
-    hasher_state: std::collections::hash_map::RandomState,
-}
-
-impl AcumuladorProcesadas {
-    fn nuevo(n_part: usize) -> CoreResult<Self> {
-        Ok(Self {
-            tmpdir: tempfile::tempdir()?,
-            n_part,
-            buffer_part: vec![Vec::new(); n_part],
-            archivos_part: vec![Vec::new(); n_part],
-            contador_archivos: vec![0; n_part],
-            buffer_filas: 0,
-            hasher_state: std::collections::hash_map::RandomState::new(),
-        })
-    }
-
-    fn agregar(&mut self, df: DataFrame) -> CoreResult<()> {
-        if df.height() == 0 {
-            return Ok(());
-        }
-        let alto = df.height();
-        let combinada = columna_texto(&df, "Combinada")?;
-        let mut por_particion: Vec<Vec<usize>> = vec![Vec::new(); self.n_part];
-        for (i, v) in combinada.iter().enumerate() {
-            let pid = (self.hasher_state.hash_one(v) % self.n_part as u64) as usize;
-            por_particion[pid].push(i);
-        }
-        for (pid, indices) in por_particion.into_iter().enumerate() {
-            if !indices.is_empty() {
-                self.buffer_part[pid].push(tomar_filas(&df, &indices)?);
-            }
-        }
-        self.buffer_filas += alto;
-        if self.buffer_filas >= FILAS_BUFFER_PARTICION_COMBINADA {
-            self.flush()?;
-        }
-        Ok(())
-    }
-
-    fn flush(&mut self) -> CoreResult<()> {
-        for p in 0..self.n_part {
-            if self.buffer_part[p].is_empty() {
-                continue;
-            }
-            let dfs = std::mem::take(&mut self.buffer_part[p]);
-            let mut df = concat_diagonal(dfs)?;
-            let ruta = self
-                .tmpdir
-                .path()
-                .join(format!("p{p}_{}.ipc", self.contador_archivos[p]));
-            self.contador_archivos[p] += 1;
-            let mut archivo = std::fs::File::create(&ruta)?;
-            IpcWriter::new(&mut archivo).finish(&mut df)?;
-            self.archivos_part[p].push(ruta);
-        }
-        self.buffer_filas = 0;
-        Ok(())
-    }
-
-    /// Relee cada partición, deduplica por 'Combinada' (menor 'Precio2') y
-    /// escribe el resultado en la hoja "Procesadas".
-    ///
-    /// Si falta 'Precio2', se avisa en vez de saltear el dedup en silencio
-    /// (antes era la única asimetría del crate: `publications_validator`'s
-    /// `dedup_bucket` ya avisaba en el mismo escenario).
-    fn finalizar(mut self, escritor: &mut EscritorXlsx, avisar: &mut dyn FnMut(&str)) -> CoreResult<()> {
-        self.flush()?;
-        for rutas in &self.archivos_part {
-            if rutas.is_empty() {
-                continue;
-            }
-            let dfs: Vec<DataFrame> = rutas
-                .iter()
-                .map(|r| -> CoreResult<DataFrame> {
-                    let archivo = std::fs::File::open(r)?;
-                    Ok(IpcReader::new(archivo).finish()?)
-                })
-                .collect::<CoreResult<_>>()?;
-            let bucket = concat_diagonal(dfs)?;
-            let deduped = if bucket.column("Precio2").is_ok() {
-                dedup_por_combinada_menor_precio2(&bucket)?
-            } else {
-                avisar("No se encontró la columna 'Precio2': no se deduplicó por precio en 'Procesadas'.");
-                bucket
-            };
-            escritor.escribir(&deduped, Some("Procesadas"))?;
-        }
-        Ok(())
-    }
-}
-
-/// Filtra/limpia sobre 'Combinada'; devuelve las válidas (SIN deduplicar
-/// todavía: eso ahora es responsabilidad de [`AcumuladorProcesadas`], que lo
-/// hace de forma GLOBAL). Escribe a hojas aparte: 'Exceso_caracteres' (>60)
-/// y, en 'comprimidas', 'Eliminadas' (con 'ERROR' o con >=2 'NA'). Luego
-/// normaliza guiones.
-pub fn aplicar_filtros_combinada(
-    df_proc: &DataFrame,
-    modo: ModoCompatibilidad,
-    escritor: &mut EscritorXlsx,
-) -> CoreResult<DataFrame> {
-    if df_proc.height() == 0 || df_proc.column("Combinada").is_err() {
-        return Ok(df_proc.clone());
-    }
-    let mut df_proc = df_proc.clone();
-
-    let combinada = columna_texto(&df_proc, "Combinada")?;
-    let mask_exceso: Vec<bool> = combinada
-        .iter()
-        .map(|v| v.as_deref().unwrap_or("").chars().count() > 60)
-        .collect();
-    let mask_exceso_ca = BooleanChunked::from_iter_values("m".into(), mask_exceso.iter().copied());
-    let mut df_exceso = df_proc.filter(&mask_exceso_ca)?;
-    let mask_no_exceso: BooleanChunked = mask_exceso_ca.not();
-    df_proc = df_proc.filter(&mask_no_exceso)?;
-    if df_exceso.column(COL_PRECIO).is_ok() {
-        df_exceso = df_exceso.drop(COL_PRECIO)?;
-    }
-    escritor.escribir(&df_exceso, Some("Exceso_caracteres"))?;
-
-    if modo == ModoCompatibilidad::Comprimidas {
-        let combinada = columna_texto(&df_proc, "Combinada")?;
-        let mask_error: Vec<bool> = combinada
-            .iter()
-            .map(|v| v.as_deref().unwrap_or("").contains("ERROR"))
-            .collect();
-        let mask_error_ca = BooleanChunked::from_iter_values("m".into(), mask_error.iter().copied());
-        escritor.escribir(&df_proc.filter(&mask_error_ca)?, Some("Eliminadas"))?;
-        let mask_no_error: BooleanChunked = mask_error_ca.not();
-        df_proc = df_proc.filter(&mask_no_error)?;
-
-        let combinada = columna_texto(&df_proc, "Combinada")?;
-        let mask_na: Vec<bool> = combinada
-            .iter()
-            .map(|v| v.as_deref().unwrap_or("").matches("NA").count() >= 2)
-            .collect();
-        let mask_na_ca = BooleanChunked::from_iter_values("m".into(), mask_na.iter().copied());
-        escritor.escribir(&df_proc.filter(&mask_na_ca)?, Some("Eliminadas"))?;
-        let mask_no_na: BooleanChunked = mask_na_ca.not();
-        df_proc = df_proc.filter(&mask_no_na)?;
-
-        let combinada: Vec<String> = columna_texto(&df_proc, "Combinada")?
-            .into_iter()
-            .map(|v| {
-                let s = v.unwrap_or_default();
-                let s = RE_NA_FINAL.replace(&s, "");
-                let s = RE_GUION_DIGITOS.replace_all(&s, "${1}@@HYPHEN@@${2}");
-                let s = s.replace('-', " ");
-                s.replace("@@HYPHEN@@", "-")
-            })
-            .collect();
-        df_proc.with_column(Column::new("Combinada".into(), combinada))?;
-    }
-
-    Ok(df_proc)
-}
 
 const FILAS_POR_SUBBLOQUE: usize = 250_000;
 const FILAS_PRE_EXPLODE: usize = 20_000;
 
-/// Explota 'Coincidencia' (separada por '@') en una fila por coincidencia.
-/// Implementado como un `take` con índices repetidos (en vez de la
-/// maquinaria de listas de Polars): más simple de leer para este caso.
-fn explotar_coincidencia(df: &DataFrame) -> CoreResult<DataFrame> {
-    let coincidencia = columna_texto(df, "Coincidencia")?;
-    let n = df.height();
-    let partes_por_fila: Vec<Vec<String>> = coincidencia
-        .iter()
-        .map(|v| match v.as_deref() {
-            Some(s) if !s.is_empty() => s.split('@').map(str::to_string).collect(),
-            _ => vec![String::new()],
-        })
-        .collect();
-
-    let indices: Vec<IdxSize> = (0..n)
-        .flat_map(|i| std::iter::repeat(i as IdxSize).take(partes_por_fila[i].len().max(1)))
-        .collect();
-    let coincidencia_explotada: Vec<String> = partes_por_fila.into_iter().flatten().collect();
-
-    let idx_ca = IdxCa::from_vec(PlSmallStr::EMPTY, indices);
-    let mut df_explotado = df.take(&idx_ca)?;
-    df_explotado.with_column(Column::new("Coincidencia".into(), coincidencia_explotada))?;
-    Ok(df_explotado)
-}
-
-/// Procesa un lote YA UNIDO (producto×compatibilidad): explota, filtra y
-/// escribe. El explode corre por REBANADAS (`FILAS_PRE_EXPLODE`) y su
-/// resultado se procesa en SUB-BLOQUES (`FILAS_POR_SUBBLOQUE`): pico de RAM
-/// acotado con independencia del factor de explosión.
 /// Contexto compartido por `procesar_unido`/`despachar_unido`: agrupa lo que
 /// siempre viaja junto entre sub-bloques de un mismo archivo (antes 6
 /// parámetros sueltos por función, con `#[allow(clippy::too_many_arguments)]`
@@ -536,9 +64,13 @@ struct ContextoUnido<'a> {
     modificar_oem: bool,
     escritor: &'a mut EscritorXlsx,
     contador_sku: &'a mut HashMap<String, u64>,
-    acumulador: &'a mut AcumuladorProcesadas,
+    acumulador: &'a mut AcumuladorParticionado,
 }
 
+/// Procesa un lote YA UNIDO (producto×compatibilidad): explota, filtra y
+/// escribe. El explode corre por REBANADAS (`FILAS_PRE_EXPLODE`) y su
+/// resultado se procesa en SUB-BLOQUES (`FILAS_POR_SUBBLOQUE`): pico de RAM
+/// acotado con independencia del factor de explosión.
 fn procesar_unido(chunk_unido: &DataFrame, ctx: &mut ContextoUnido) -> CoreResult<()> {
     if ctx.modo == ModoCompatibilidad::Comprimidas && chunk_unido.column("Coincidencia").is_ok() {
         let n = chunk_unido.height();
@@ -612,7 +144,7 @@ fn despachar_unido(sub: &DataFrame, ctx: &mut ContextoUnido) -> CoreResult<()> {
     if df_proc.column(COL_PRECIO).is_ok() {
         df_proc = df_proc.drop(COL_PRECIO)?;
     }
-    ctx.acumulador.agregar(df_proc)?;
+    ctx.acumulador.agregar(&df_proc, "Combinada")?;
     Ok(())
 }
 
@@ -742,7 +274,8 @@ pub fn ejecutar_procesamiento_compatibilidad(
         let mut urls_matcheadas: HashSet<String> = HashSet::new();
         let tiene_url = df_hoja1.column(COL_START_URL).is_ok();
         let mut contador_sku: HashMap<String, u64> = HashMap::new();
-        let mut acumulador = AcumuladorProcesadas::nuevo(PARTICIONES_DEDUP_COMBINADA)?;
+        let mut acumulador =
+            AcumuladorParticionado::nuevo(PARTICIONES_DEDUP_COMBINADA, FILAS_BUFFER_PARTICION_COMBINADA)?;
 
         if tiene_url {
             iter_bloques_compat(
@@ -831,7 +364,7 @@ pub fn ejecutar_procesamiento_compatibilidad(
             inicio += tomar;
         }
 
-        acumulador.finalizar(escritor, &mut *avisar)?;
+        acumulador.finalizar(|bucket| escribir_bucket_procesadas(bucket, escritor, &mut *avisar))?;
         escritor.escribir(&df_eliminadas, Some("Eliminadas"))?;
         Ok(())
     })?;
@@ -842,98 +375,6 @@ pub fn ejecutar_procesamiento_compatibilidad(
 mod tests {
     use super::*;
     use crate::test_util::{escribir_libro, leer_hojas};
-
-    #[test]
-    fn limpiar_precio_hoja1_extrae_el_entero_entre_signo_y_punto() -> CoreResult<()> {
-        let df = df!("Precio" => ["$85.99", "$5.00", "sin precio", ""])?;
-        let limpio = limpiar_precio_hoja1(&df)?;
-        assert_eq!(
-            limpio.column("Precio")?.i64()?.iter().collect::<Vec<_>>(),
-            vec![Some(85), Some(5), Some(0), Some(0)],
-            "no numérico o vacío cae a 0, no aborta"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn limpiar_precio_hoja1_tolera_separador_de_miles() -> CoreResult<()> {
-        // "$1,234.56" tras los recortes de '$' y '.' queda en "1,234", que
-        // `parse::<i64>()` rechazaría directamente (coma no es dígito) y
-        // caería en silencio a 0 en vez de 1234.
-        let df = df!("Precio" => ["$1,234.56"])?;
-        let limpio = limpiar_precio_hoja1(&df)?;
-        assert_eq!(limpio.column("Precio")?.i64()?.get(0), Some(1234));
-        Ok(())
-    }
-
-    #[test]
-    fn preprocesar_hoja1_descarta_opcion_llena_o_sin_imagenes_incluido_video() -> CoreResult<()> {
-        let df = df!(
-            "web-scraper-start-url" => ["u1", "u2", "u3", "u4"],
-            "Precio" => ["$10.00", "$20.00", "$30.00", "$40.00"],
-            "Opcion" => ["opcion-llena", "", "", ""],
-            "Imagen 1" => ["https://c.com/1.jpg", "", "https://c.com/video.mp4", "https://c.com/2.jpg"],
-        )?;
-        let (validas, eliminadas) = preprocesar_hoja1(&df)?;
-        assert_eq!(
-            validas.column("web-scraper-start-url")?.str()?.get(0),
-            Some("u4"),
-            "solo u4 tiene Opcion vacía Y una imagen real (no video)"
-        );
-        assert_eq!(validas.height(), 1);
-        let mut urls_eliminadas: Vec<_> = eliminadas
-            .column("web-scraper-start-url")?
-            .str()?
-            .iter()
-            .map(|v| v.unwrap().to_string())
-            .collect();
-        urls_eliminadas.sort();
-        assert_eq!(
-            urls_eliminadas,
-            vec!["u1".to_string(), "u2".to_string(), "u3".to_string()],
-            "u1: Opcion llena; u2: sin imagen; u3: 'video' cuenta como sin imagen"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn preprocesar_hoja1_sin_columnas_de_imagen_no_descarta_por_defecto() -> CoreResult<()> {
-        // A diferencia de 'unicas'/'amazon': sin columnas de imagen, el
-        // default acá es NO descartar (documentado en preprocesar_hoja1).
-        let df = df!(
-            "web-scraper-start-url" => ["u1"],
-            "Precio" => ["$10.00"],
-            "Opcion" => [""],
-        )?;
-        let (validas, eliminadas) = preprocesar_hoja1(&df)?;
-        assert_eq!(validas.height(), 1);
-        assert_eq!(eliminadas.height(), 0);
-        Ok(())
-    }
-
-    #[test]
-    fn sku_secuencial_global_entre_bloques() -> CoreResult<()> {
-        let mut contador = HashMap::new();
-        let df1 = df!("Sku" => ["u-1-a-1", "u-1-a-1"])?;
-        let r1 = aplicar_sku_secuencial(&df1, Some(&mut contador))?;
-        assert_eq!(
-            r1.column("Sku")?
-                .str()?
-                .iter()
-                .map(|v| v.unwrap())
-                .collect::<Vec<_>>(),
-            vec!["u-1-a-1-1", "u-1-a-1-2"]
-        );
-
-        let df2 = df!("Sku" => ["u-1-a-1"])?;
-        let r2 = aplicar_sku_secuencial(&df2, Some(&mut contador))?;
-        assert_eq!(
-            r2.column("Sku")?.str()?.get(0),
-            Some("u-1-a-1-3"),
-            "continúa la numeración GLOBAL, no reinicia"
-        );
-        Ok(())
-    }
 
     #[test]
     fn e2e_comprimidas_explode_y_no_procesadas() -> CoreResult<()> {
@@ -1051,69 +492,6 @@ mod tests {
     }
 
     #[test]
-    fn aplicar_filtros_combinada_exceso_de_caracteres_va_a_hoja_aparte() -> CoreResult<()> {
-        let tmp = tempfile::tempdir().unwrap();
-        let ruta = tmp.path().join("filtros.xlsx");
-        let mut escritor = crate::escritor::nuevo_escritor(&ruta, |_: &str| {})?;
-
-        let combinada_larga = "x".repeat(61);
-        let df = df!(
-            "Sku" => ["s1", "s2"],
-            "Combinada" => [combinada_larga.as_str(), "corta"],
-        )?;
-        let resultado = aplicar_filtros_combinada(&df, ModoCompatibilidad::Repetidas, &mut escritor)?;
-        escritor.cerrar()?;
-
-        assert_eq!(
-            resultado.height(),
-            1,
-            "la fila con más de 60 caracteres en Combinada se saca"
-        );
-        assert_eq!(resultado.column("Combinada")?.str()?.get(0), Some("corta"));
-
-        let mut libro = commerce_core::abrir_libro(&ruta).unwrap();
-        let hojas = commerce_core::nombres_hojas_libro(&libro);
-        assert!(hojas.iter().any(|h| h == "Exceso_caracteres"));
-        let exceso = commerce_core::leer_hoja_por_nombre(&mut libro, &ruta, "Exceso_caracteres").unwrap();
-        assert_eq!(exceso.height(), 1);
-        Ok(())
-    }
-
-    #[test]
-    fn aplicar_filtros_combinada_modo_comprimidas_filtra_error_na_y_normaliza_guiones() -> CoreResult<()> {
-        let tmp = tempfile::tempdir().unwrap();
-        let ruta = tmp.path().join("filtros_comp.xlsx");
-        let mut escritor = crate::escritor::nuevo_escritor(&ruta, |_: &str| {})?;
-
-        let df = df!(
-            "Sku" => ["s1", "s2", "s3"],
-            "Combinada" => ["Tiene ERROR aqui", "NA parte-NA otra", "Civic 2-3 puerta-lateral"],
-        )?;
-        let resultado = aplicar_filtros_combinada(&df, ModoCompatibilidad::Comprimidas, &mut escritor)?;
-        escritor.cerrar()?;
-
-        assert_eq!(
-            resultado.height(),
-            1,
-            "solo sobrevive la fila sin 'ERROR' y con menos de 2 'NA'"
-        );
-        assert_eq!(
-            resultado.column("Combinada")?.str()?.get(0),
-            Some("Civic 2-3 puerta lateral"),
-            "el guión ENTRE DÍGITOS se preserva; el resto de guiones se normaliza a espacio"
-        );
-
-        let mut libro = commerce_core::abrir_libro(&ruta).unwrap();
-        let eliminadas = commerce_core::leer_hoja_por_nombre(&mut libro, &ruta, "Eliminadas").unwrap();
-        assert_eq!(
-            eliminadas.height(),
-            2,
-            "la fila con 'ERROR' y la de 2+ 'NA' van a Eliminadas"
-        );
-        Ok(())
-    }
-
-    #[test]
     fn e2e_repetidas_borra_linea_y_depura_litros_en_modelo() -> CoreResult<()> {
         let tmp = tempfile::tempdir().unwrap();
         let entrada = tmp.path().join("rep.xlsx");
@@ -1176,8 +554,8 @@ mod tests {
         // se procesa en su PROPIA invocación. Dos productos DISTINTOS que
         // resuelven a la MISMA 'Combinada' pero llegan por hojas distintas
         // sobrevivían los dos, cada uno "deduplicado" solo contra sí mismo.
-        // Ahora el dedup es GLOBAL (AcumuladorProcesadas particiona por hash
-        // de 'Combinada' y recién deduplica al final, entre TODAS las
+        // Ahora el dedup es GLOBAL (`AcumuladorParticionado` particiona por
+        // hash de 'Combinada' y recién deduplica al final, entre TODAS las
         // hojas): debe sobrevivir solo el de menor Precio2.
         let tmp = tempfile::tempdir().unwrap();
         let entrada = tmp.path().join("dup_entre_hojas.xlsx");

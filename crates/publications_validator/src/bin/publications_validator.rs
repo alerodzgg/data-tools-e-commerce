@@ -52,7 +52,7 @@ fn ejecutar() -> Result<(), AppError> {
         Ok(stats) => {
             barra.finish_and_clear();
             app_shell::success(&format!(
-                "Procesamiento completado — {} procesadas, {} eliminadas ({} lotes).",
+                "Listo: {} procesadas, {} eliminadas ({} lotes).",
                 stats.procesadas, stats.eliminadas, stats.chunks
             ));
         }

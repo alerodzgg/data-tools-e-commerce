@@ -48,17 +48,22 @@ fn asegurar_carpetas(entrada: &Path, salida: &Path) {
     let _ = std::fs::create_dir_all(salida);
 }
 
+/// Si un hilo previo entró en pánico mientras tenía el lock, el `RwLock`
+/// queda envenenado para siempre — pero los datos protegidos (rutas de
+/// entrada/salida) no se corrompen por eso, así que hay que recuperarlos en
+/// vez de que CUALQUIER llamada posterior (de cualquier binario) entre en
+/// pánico también.
 pub fn ruta_entrada() -> PathBuf {
-    RUTAS.read().unwrap().entrada.clone()
+    RUTAS.read().unwrap_or_else(|e| e.into_inner()).entrada.clone()
 }
 
 pub fn ruta_salida() -> PathBuf {
-    RUTAS.read().unwrap().salida.clone()
+    RUTAS.read().unwrap_or_else(|e| e.into_inner()).salida.clone()
 }
 
 /// Cambia las carpetas para esta sesión (no se guarda en disco).
 pub fn fijar_rutas(entrada: Option<PathBuf>, salida: Option<PathBuf>) {
-    let mut rutas = RUTAS.write().unwrap();
+    let mut rutas = RUTAS.write().unwrap_or_else(|e| e.into_inner());
     if let Some(e) = entrada {
         rutas.entrada = e;
     }
@@ -88,5 +93,27 @@ mod tests {
         assert_eq!(ruta_entrada(), tmp.path());
         // restaurar para no afectar otros tests que compartan el proceso
         fijar_rutas(Some(original_entrada), None);
+    }
+
+    #[test]
+    fn un_lock_envenenado_por_un_panico_previo_se_recupera_en_vez_de_propagar_el_panico() {
+        let original_entrada = ruta_entrada();
+        let original_salida = ruta_salida();
+
+        // Envenena el RwLock a propósito, en otro hilo: entrar en pánico
+        // mientras se tiene el write-lock tomado es justo lo que deja el
+        // lock envenenado para siempre en la implementación estándar.
+        let resultado = std::thread::spawn(|| {
+            let _guard = RUTAS.write().unwrap();
+            panic!("veneno a propósito para este test");
+        })
+        .join();
+        assert!(resultado.is_err());
+
+        // Sin la recuperación, esto entraría en pánico también.
+        let _ = ruta_entrada();
+        fijar_rutas(Some(original_entrada.clone()), Some(original_salida.clone()));
+        assert_eq!(ruta_entrada(), original_entrada);
+        assert_eq!(ruta_salida(), original_salida);
     }
 }

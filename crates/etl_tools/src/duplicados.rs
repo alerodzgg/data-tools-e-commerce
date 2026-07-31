@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use commerce_core::CoreResult;
+use commerce_core::{CoreResult, RutaEscritaReal};
 use polars::prelude::*;
 
 use crate::escritor::nuevo_escritor;
@@ -130,7 +130,13 @@ pub fn escribir_filtrado(
 ///   - `ruta_limpia` (si `Some`): versión DEDUPLICADA keep-first — conserva
 ///     la PRIMERA aparición (en orden de lectura) de cada clave repetida.
 ///
-/// Devuelve (filas_reporte, filas_limpio).
+/// Devuelve (filas_reporte, filas_limpio, ruta_limpia_real). `ruta_limpia_real`
+/// es la ruta EFECTIVA donde se escribió `ruta_limpia` — puede diferir de la
+/// pedida si `EscritorXlsx` la redirigió por una colisión (p. ej. un
+/// temporal rancio de una corrida anterior interrumpida). El llamador que
+/// vaya a sobrescribir el archivo original DEBE renombrar esta ruta, nunca
+/// la que pidió: hacerlo con la pedida podía renombrar basura vieja sobre
+/// los datos del usuario sin que nada lo detectara.
 #[allow(clippy::too_many_arguments)]
 pub fn escribir_reporte_y_limpio(
     ruta_entrada: &Path,
@@ -142,66 +148,85 @@ pub fn escribir_reporte_y_limpio(
     excluir: Option<&[&str]>,
     avisar: impl FnMut(&str),
     mut progreso: impl FnMut(u64),
-) -> CoreResult<(usize, usize)> {
+) -> CoreResult<(usize, usize, Option<RutaEscritaReal>)> {
     let mut escritor_dup = nuevo_escritor(ruta_dup, columnas.to_vec())?;
     let mut escritor_limpio = match ruta_limpia {
         Some(r) => Some(nuevo_escritor(r, columnas.to_vec())?),
         None => None,
     };
-    let mut emitidas: HashSet<String> = HashSet::new();
+    let ruta_limpia_real = escritor_limpio
+        .as_ref()
+        .map(|e| RutaEscritaReal::nueva(e.ruta.clone()));
 
-    let chunks = iter_hojas_valores(std::slice::from_ref(&ruta_entrada.to_path_buf()), excluir, avisar)?;
-    for chunk in chunks {
-        let filas_entrada = chunk.height();
-        let preparado = preparar_chunk_clave(&chunk, columnas, columna_clave)?;
-        let claves_col: Vec<String> = columna_texto_o_vacia(&preparado, columna_clave)?
-            .iter()
-            .map(|v| clave_limpia_de(v.as_deref()))
-            .collect();
-        let es_repetida: Vec<bool> = claves_col.iter().map(|k| claves_repetidas.contains(k)).collect();
+    let resultado = (|| -> CoreResult<(usize, usize)> {
+        let mut emitidas: HashSet<String> = HashSet::new();
+        let chunks = iter_hojas_valores(std::slice::from_ref(&ruta_entrada.to_path_buf()), excluir, avisar)?;
+        for chunk in chunks {
+            let filas_entrada = chunk.height();
+            let preparado = preparar_chunk_clave(&chunk, columnas, columna_clave)?;
+            let claves_col: Vec<String> = columna_texto_o_vacia(&preparado, columna_clave)?
+                .iter()
+                .map(|v| clave_limpia_de(v.as_deref()))
+                .collect();
+            let es_repetida: Vec<bool> = claves_col.iter().map(|k| claves_repetidas.contains(k)).collect();
 
-        let mascara_rep = BooleanChunked::from_iter_values("m".into(), es_repetida.iter().copied());
-        let duplicados = preparado.filter(&mascara_rep)?;
-        if duplicados.height() > 0 {
-            escritor_dup.escribir(&duplicados, None)?;
-        }
+            let mascara_rep = BooleanChunked::from_iter_values("m".into(), es_repetida.iter().copied());
+            let duplicados = preparado.filter(&mascara_rep)?;
+            if duplicados.height() > 0 {
+                escritor_dup.escribir(&duplicados, None)?;
+            }
 
-        if let Some(escritor_limpio) = escritor_limpio.as_mut() {
-            let mut vistas_en_chunk: HashSet<String> = HashSet::new();
-            let mut mantener: Vec<bool> = Vec::with_capacity(claves_col.len());
-            let mut nuevas: Vec<String> = Vec::new();
-            for (i, k) in claves_col.iter().enumerate() {
-                if !es_repetida[i] {
-                    mantener.push(true);
-                    continue;
+            if let Some(escritor_limpio) = escritor_limpio.as_mut() {
+                let mut vistas_en_chunk: HashSet<String> = HashSet::new();
+                let mut mantener: Vec<bool> = Vec::with_capacity(claves_col.len());
+                let mut nuevas: Vec<String> = Vec::new();
+                for (i, k) in claves_col.iter().enumerate() {
+                    if !es_repetida[i] {
+                        mantener.push(true);
+                        continue;
+                    }
+                    let primera_en_chunk = vistas_en_chunk.insert(k.clone());
+                    let se_mantiene = primera_en_chunk && !emitidas.contains(k);
+                    mantener.push(se_mantiene);
+                    if se_mantiene {
+                        nuevas.push(k.clone());
+                    }
                 }
-                let primera_en_chunk = vistas_en_chunk.insert(k.clone());
-                let se_mantiene = primera_en_chunk && !emitidas.contains(k);
-                mantener.push(se_mantiene);
-                if se_mantiene {
-                    nuevas.push(k.clone());
+                emitidas.extend(nuevas);
+                let mascara_limpio = BooleanChunked::from_iter_values("m".into(), mantener.into_iter());
+                let limpio = preparado.filter(&mascara_limpio)?;
+                if limpio.height() > 0 {
+                    escritor_limpio.escribir(&limpio, None)?;
                 }
             }
-            emitidas.extend(nuevas);
-            let mascara_limpio = BooleanChunked::from_iter_values("m".into(), mantener.into_iter());
-            let limpio = preparado.filter(&mascara_limpio)?;
-            if limpio.height() > 0 {
-                escritor_limpio.escribir(&limpio, None)?;
-            }
+            progreso(filas_entrada as u64);
         }
-        progreso(filas_entrada as u64);
+
+        escritor_dup.cerrar()?;
+        let n_dup = escritor_dup.total;
+        let n_limpio = match escritor_limpio.as_mut() {
+            Some(e) => {
+                e.cerrar()?;
+                e.total
+            }
+            None => 0,
+        };
+        Ok((n_dup, n_limpio))
+    })();
+
+    match resultado {
+        Ok((n_dup, n_limpio)) => Ok((n_dup, n_limpio, ruta_limpia_real)),
+        Err(error) => {
+            // El llamador ya no puede adivinar bien qué archivo(s) limpiar
+            // (ver la nota de `ruta_limpia_real` arriba): se aborta acá,
+            // contra la ruta REAL de cada escritor.
+            let _ = escritor_dup.abortar();
+            if let Some(e) = escritor_limpio.as_mut() {
+                let _ = e.abortar();
+            }
+            Err(error)
+        }
     }
-
-    escritor_dup.cerrar()?;
-    let n_dup = escritor_dup.total;
-    let n_limpio = match escritor_limpio {
-        Some(mut e) => {
-            e.cerrar()?;
-            e.total
-        }
-        None => 0,
-    };
-    Ok((n_dup, n_limpio))
 }
 
 #[cfg(test)]
@@ -284,7 +309,7 @@ mod tests {
         let rep = tmp.path().join("rep.xlsx");
         let lim = tmp.path().join("lim.xlsx");
         let columnas = vec!["Sku".to_string(), "Val".to_string()];
-        let (n_dup, n_lim) = escribir_reporte_y_limpio(
+        let (n_dup, n_lim, ruta_lim_real) = escribir_reporte_y_limpio(
             &archivo,
             &rep,
             Some(&lim),
@@ -297,6 +322,7 @@ mod tests {
         )?;
         assert_eq!(n_dup, 3);
         assert_eq!(n_lim, 3);
+        assert_eq!(ruta_lim_real.map(|r| r.into_path_buf()), Some(lim.clone()));
 
         let hojas_rep = commerce_core::iter_hojas_xlsx(&rep, None, |_| {});
         let vals: Vec<_> = hojas_rep[0]
@@ -322,6 +348,62 @@ mod tests {
             .collect();
         assert_eq!(skus, vec!["K1", "K2", "K3"]);
         assert_eq!(vals, vec!["a", "b", "e"]);
+        Ok(())
+    }
+
+    #[test]
+    fn ruta_limpia_real_difiere_de_la_pedida_si_ya_existe_un_temporal_rancio() -> CoreResult<()> {
+        // Reproduce el bug de pérdida de datos: si queda un
+        // "{stem}__tmp_limpio.xlsx" de una corrida anterior interrumpida,
+        // `EscritorXlsx` lo esquiva escribiendo en "(1).xlsx" en su lugar —
+        // el llamador DEBE enterarse de esa ruta real para saber qué
+        // renombrar sobre el archivo original; si usara la ruta pedida,
+        // renombraría la basura rancia (nunca tocada por esta llamada) sobre
+        // los datos del usuario.
+        let tmp = tempfile::tempdir().unwrap();
+        let archivo = tmp.path().join("dup.xlsx");
+        escribir_libro(
+            &archivo,
+            &[("H1", vec![["Sku", "Val"], ["K1", "a"], ["K1", "b"]])],
+        );
+
+        let ruta_pedida = tmp.path().join("dup__tmp_limpio.xlsx");
+        std::fs::write(&ruta_pedida, b"basura de una corrida anterior interrumpida").unwrap();
+
+        let rep = tmp.path().join("rep.xlsx");
+        let columnas = vec!["Sku".to_string(), "Val".to_string()];
+        let repetidas = HashSet::from(["k1".to_string()]);
+        let (_n_dup, n_lim, ruta_lim_real) = escribir_reporte_y_limpio(
+            &archivo,
+            &rep,
+            Some(&ruta_pedida),
+            &columnas,
+            "Sku",
+            &repetidas,
+            None,
+            |_| {},
+            |_| {},
+        )?;
+
+        assert_eq!(n_lim, 1);
+        let ruta_lim_real = ruta_lim_real.expect("se pidió ruta_limpia");
+        assert_ne!(
+            ruta_lim_real.as_path(),
+            ruta_pedida,
+            "EscritorXlsx debió redirigir la escritura, esquivando el temporal rancio"
+        );
+        assert_eq!(
+            std::fs::read(&ruta_pedida).unwrap(),
+            b"basura de una corrida anterior interrumpida",
+            "el temporal rancio original no debe tocarse: solo la ruta REAL devuelta es segura de renombrar"
+        );
+
+        let hojas = commerce_core::iter_hojas_xlsx(&ruta_lim_real, None, |_| {});
+        assert_eq!(
+            hojas[0].height(),
+            1,
+            "la ruta real sí tiene los datos limpios de verdad"
+        );
         Ok(())
     }
 

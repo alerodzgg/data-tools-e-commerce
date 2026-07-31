@@ -14,15 +14,21 @@ use regex::Regex;
 const IMAGE_EXT_SUFFIXES: [&str; 7] = [".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff", ".gif"];
 
 // Corta en el primer separador/espacio, nunca a mitad de la siguiente URL.
-static URL_PATTERN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"https?://[^\s,;]+").unwrap());
+// El esquema es case-insensitive (solo esa parte, vía el grupo `(?i:...)`):
+// un origen que traiga "Http://" o "HTTPS://" (p. ej. autocorrección de
+// Excel) es tan válido como en minúsculas.
+#[allow(clippy::unwrap_used)] // patrón regex literal fijo, válido por construcción
+static URL_PATTERN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i:https?)://[^\s,;]+").unwrap());
 
 /// `True` si `value` es una URL http(s) cuyo path (sin query string) termina
-/// en una extensión de imagen conocida.
+/// en una extensión de imagen conocida. El esquema se compara sin distinguir
+/// mayúsculas/minúsculas (ver nota en [`URL_PATTERN`]).
 pub fn is_image(value: Option<&str>) -> bool {
     let Some(text) = value.map(str::trim) else {
         return false;
     };
-    if !(text.starts_with("http://") || text.starts_with("https://")) {
+    let esquema = text.get(..8).unwrap_or(text).to_lowercase();
+    if !(esquema.starts_with("http://") || esquema.starts_with("https://")) {
         return false;
     }
     let path = text.split('?').next().unwrap_or("").to_lowercase();
@@ -101,6 +107,20 @@ mod tests {
     fn is_image_no_confunde_gifted_com_con_extension_gif() {
         // `.endswith` ancla al final del path, no es un substring en cualquier parte.
         assert!(!is_image(Some("http://foo.gifted.com/x")));
+    }
+
+    #[test]
+    fn is_image_acepta_esquema_en_mayusculas() {
+        assert!(is_image(Some("HTTP://x.com/1.jpg")));
+        assert!(is_image(Some("Https://x.com/1.jpg")));
+    }
+
+    #[test]
+    fn split_image_urls_reconoce_esquema_en_mayusculas() {
+        assert_eq!(
+            split_image_urls(Some("HTTPS://x.com/1.jpg")),
+            vec!["HTTPS://x.com/1.jpg".to_string()]
+        );
     }
 
     #[test]

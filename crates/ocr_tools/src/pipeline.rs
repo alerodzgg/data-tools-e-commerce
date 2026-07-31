@@ -115,12 +115,18 @@ impl ImagePipeline {
         None
     }
 
-    /// Etapa OCR. Solo debe llamarse cuando `run_fast` devolvió `None`.
+    /// Etapa OCR. Solo debe llamarse cuando `run_fast` devolvió `None`. Hoy el
+    /// único caller (`async_processor`) respeta esa invariante, pero
+    /// `run_slow` es `pub` (este crate es una librería): un llamador nuevo
+    /// que la viole no debe panickear, sino recibir un `Err` — mismo
+    /// criterio que `salida_output` en `session.rs` ya aplica para "modelo
+    /// con forma de salida inesperada".
     pub fn run_slow(&self, ctx: &ImageContext, reader: &mut Reader) -> ort::Result<PipelineVerdict> {
-        let slow = self
-            .slow
-            .as_ref()
-            .expect("run_slow llamado sin etapa lenta configurada");
+        let Some(slow) = self.slow.as_ref() else {
+            return Err(ort::Error::new(
+                "run_slow llamado sin etapa lenta (OCR) configurada en este pipeline",
+            ));
+        };
         let res = slow.detect(ctx, reader)?;
         Ok(if res.detected {
             PipelineVerdict {
@@ -196,5 +202,34 @@ mod tests {
         let ctx = ImageContext::new(&imagen_neutra(50, 50));
         let verdict = pipeline.run_fast(&ctx).unwrap();
         assert!(verdict.approved);
+    }
+
+    #[test]
+    fn run_slow_devuelve_error_en_vez_de_panic_si_no_hay_etapa_lenta_configurada() {
+        // Antes: `.expect(...)` — un caller que violara la invariante
+        // documentada (llamar a `run_slow` sin etapa lenta) tumbaba el
+        // proceso. `run_slow` ya devuelve `ort::Result`: la violación debe
+        // ser un `Err`, no un panic.
+        use std::path::PathBuf;
+
+        let toggles = DetectorToggles {
+            d4_d5_d6: false,
+            ..DetectorToggles::default()
+        };
+        let pipeline = ImagePipeline::from_config(PipelineConfig::default(), toggles);
+        assert!(!pipeline.has_slow_stage());
+
+        let modelo = |nombre: &str| {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("models")
+                .join(nombre)
+        };
+        let mut reader =
+            crate::reader::Reader::new(modelo("craft_detector.onnx"), modelo("recognizer_latin_g2.onnx"))
+                .expect("carga los modelos empaquetados del repo");
+
+        let ctx = ImageContext::new(&imagen_neutra(50, 50));
+        let resultado = pipeline.run_slow(&ctx, &mut reader);
+        assert!(resultado.is_err(), "debe ser Err, no panickear");
     }
 }
