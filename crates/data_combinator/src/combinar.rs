@@ -79,10 +79,16 @@ const NOMBRES_RESERVADOS_WINDOWS: &[&str] = &[
 /// en cualquier ubicación con los permisos del usuario. También rechaza los
 /// nombres de [`NOMBRES_RESERVADOS_WINDOWS`].
 fn validar_nombre_salida(nombre: &str) -> CoreResult<()> {
-    let es_solo_un_nombre = Path::new(nombre)
-        .file_name()
-        .is_some_and(|f| f.to_str() == Some(nombre));
-    if !es_solo_un_nombre {
+    // Se chequean AMBOS separadores ('/' y '\\') de forma explícita, no vía
+    // `Path::file_name()`: la idea de "separador" de `Path` es la del SO en
+    // el que corre — en Linux (donde corre CI) '\\' NO es separador de
+    // ruta, así que `Path::new("..\\otro\\archivo").file_name()` devuelve
+    // el string COMPLETO como si fuera "un solo nombre", dejando pasar en
+    // Linux justo la entrada que en Windows sí se rechaza (bug real que
+    // esta suite nunca detectó hasta la primera corrida de CI en Linux).
+    let tiene_separador = nombre.contains('/') || nombre.contains('\\');
+    let es_relativo_especial = nombre == "." || nombre == "..";
+    if nombre.is_empty() || tiene_separador || es_relativo_especial {
         return Err(error_generico(format!(
             "El nombre de salida '{nombre}' no es válido: no puede contener separadores de ruta \
              ni ser '.'/'..'/una ruta absoluta. Usa solo un nombre de archivo."
