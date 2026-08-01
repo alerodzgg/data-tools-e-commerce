@@ -2,10 +2,9 @@
 //! duplicados, ordenar columnas, dividir por caracteres, BUSCARV
 //! (exacto/parcial), Encontrar.
 //!
-//! "Borrar por color de fuente" queda fuera (mismo motivo que en el motor:
-//! ningún lector XLSX en Rust expone hoy el color de fuente de una celda) —
-//! la opción aparece en el menú pero avisa que no está disponible, en vez de
-//! desaparecer en silencio.
+//! "Borrar por color de fuente" no está en el menú: requeriría leer el
+//! color de fuente de cada celda, algo que ningún lector de XLSX en el
+//! ecosistema Rust expone hoy (ver el comentario de alcance en `lib.rs`).
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -1496,7 +1495,6 @@ fn ejecutar() -> AppResult<()> {
     loop {
         let opciones = vec![
             "Borrar por palabra clave".to_string(),
-            "Borrar por color de fuente (solo XLSX)".to_string(),
             "Gestionar duplicados (por columna clave)".to_string(),
             "Ordenar columnas (A→Z / 0→9, estilo Excel)".to_string(),
             "Contar caracteres de una columna (columna, hojas o reporte)".to_string(),
@@ -1524,17 +1522,14 @@ fn ejecutar() -> AppResult<()> {
                 Err(e) => Err(e),
             }
         } else if modo == opciones[1] {
-            app_shell::warn("Borrar por color de fuente todavía no está disponible en este puerto: ningún lector XLSX en Rust expone hoy el color de fuente de una celda.");
-            Ok(())
-        } else if modo == opciones[2] {
             gestionar_duplicados(&ruta_salida)
-        } else if modo == opciones[3] {
+        } else if modo == opciones[2] {
             ordenar_columna(&ruta_salida)
-        } else if modo == opciones[4] {
+        } else if modo == opciones[3] {
             dividir_por_caracteres(&ruta_salida)
-        } else if modo == opciones[5] {
+        } else if modo == opciones[4] {
             buscarv_modo(&ruta_salida)
-        } else if modo == opciones[6] {
+        } else if modo == opciones[5] {
             buscarv_parcial_modo(&ruta_salida)
         } else {
             encontrar_modo(&ruta_salida)

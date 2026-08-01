@@ -237,12 +237,37 @@ pub fn menu_multiple_preseleccionado<T: fmt::Display>(
 /// de confirmar el valor por defecto con Enter. Antes devolvía `bool` a
 /// secas y absorbía el ESC como si fuera `por_defecto`, así que el llamador
 /// no podía distinguir "canceló" de "confirmó el valor por defecto".
+/// Acepta "s"/"si"/"sí" (y, por compatibilidad, "y"/"yes") para sí; "n"/"no"
+/// para no — sin distinguir mayúsculas/acentos.
+fn confirmar_parser(respuesta: &str) -> Result<bool, ()> {
+    match respuesta.trim().to_lowercase().as_str() {
+        "s" | "si" | "sí" | "y" | "yes" => Ok(true),
+        "n" | "no" => Ok(false),
+        _ => Err(()),
+    }
+}
+
+/// "(S/n)"/"(s/N)", nunca "(Y/n)"/"(y/N)": el formateador por default de
+/// `inquire::Confirm` está en inglés, y el resto de la interfaz está en
+/// español — mezclar los dos es la inconsistencia real (la mayúscula en sí
+/// misma, marcando cuál es la opción por default al apretar Enter, es una
+/// convención válida que se conserva).
+fn confirmar_formatter_default(por_defecto: bool) -> String {
+    if por_defecto {
+        "S/n".to_string()
+    } else {
+        "s/N".to_string()
+    }
+}
+
 pub fn menu_confirmar(mensaje: &str, por_defecto: bool) -> FlujoResult<Option<bool>> {
     if crate::testing::activo() {
         return Ok(crate::testing::tomar_confirmacion(mensaje));
     }
     Ok(Confirm::new(mensaje)
         .with_default(por_defecto)
+        .with_parser(&confirmar_parser)
+        .with_default_value_formatter(&confirmar_formatter_default)
         .prompt_skippable()?)
 }
 
@@ -296,6 +321,27 @@ mod tests {
             menu_confirmar("¿ok?", false).unwrap()
         });
         assert_eq!(cancelado, None);
+    }
+
+    #[test]
+    fn confirmar_parser_acepta_variantes_en_espanol_sin_distinguir_mayusculas_ni_acentos() {
+        for si in ["s", "S", "si", "Si", "sí", "SÍ", "  s  "] {
+            assert_eq!(confirmar_parser(si), Ok(true), "'{si}' debe interpretarse como sí");
+        }
+        for no in ["n", "N", "no", "No", "  no  "] {
+            assert_eq!(confirmar_parser(no), Ok(false), "'{no}' debe interpretarse como no");
+        }
+        assert_eq!(confirmar_parser(""), Err(()));
+        assert_eq!(confirmar_parser("tal vez"), Err(()));
+    }
+
+    #[test]
+    fn confirmar_formatter_default_nunca_usa_las_letras_en_ingles() {
+        // La inconsistencia real no era la mayúscula (marca la opción por
+        // default), sino mostrar "Y/n"/"y/N" en inglés en medio de una
+        // interfaz en español.
+        assert_eq!(confirmar_formatter_default(true), "S/n");
+        assert_eq!(confirmar_formatter_default(false), "s/N");
     }
 
     #[test]
