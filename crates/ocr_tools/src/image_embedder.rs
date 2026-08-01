@@ -155,6 +155,10 @@ pub struct ImageEmbedder {
     /// hoja (vía `procesar_hoja`) y antes reconstruía el cliente en cada
     /// llamada, perdiendo el reuso de conexiones entre hojas del mismo libro.
     downloader_cache: tokio::sync::OnceCell<AsyncImageDownloader>,
+    /// Correlativo para el nombre de archivo de cada imagen incrustada, único
+    /// en TODO el libro (no por hoja: todas comparten el mismo `xl/media/`).
+    /// Ver [`Self::nombre_imagen_unico`].
+    siguiente_imagen: std::sync::atomic::AtomicUsize,
 }
 
 impl ImageEmbedder {
@@ -166,6 +170,7 @@ impl ImageEmbedder {
             download_cfg,
             max_concurrency,
             downloader_cache: tokio::sync::OnceCell::new(),
+            siguiente_imagen: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
@@ -379,6 +384,27 @@ impl ImageEmbedder {
         resultados
     }
 
+    /// Nombre de archivo distinto para cada imagen incrustada.
+    ///
+    /// NO es cosmético: `umya-spreadsheet` usa este nombre como la ruta real
+    /// dentro del .xlsx (`xl/media/<nombre>`), y su escritor **saltea en
+    /// silencio** cualquier entrada cuyo nombre ya exista en el paquete
+    /// (`WriterManager::add_bin` chequea `check_file_exist` y no sobrescribe).
+    /// Con un nombre fijo, entonces, solo se guardaba la PRIMERA imagen del
+    /// libro y todas las celdas terminaban apuntando a ese único archivo —
+    /// el resultado visible era "todas las filas muestran la misma imagen"
+    /// aunque cada URL se hubiera descargado bien y fuera distinta.
+    ///
+    /// El correlativo es de todo el libro, no por hoja: `xl/media/` es
+    /// compartido, así que dos hojas con la misma numeración volverían a
+    /// colisionar.
+    fn nombre_imagen_unico(&self) -> String {
+        let n = self
+            .siguiente_imagen
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        format!("img_{n}.png")
+    }
+
     // ── Paso 5: insertar las imágenes descargadas + ajustar dimensiones ──
     fn insertar_imagenes(
         &self,
@@ -416,7 +442,7 @@ impl ImageEmbedder {
             xl_img.new_image_with_dimensions(
                 self.cfg.alto_px,
                 self.cfg.ancho_px,
-                "img.png",
+                &self.nombre_imagen_unico(),
                 buffer.into_inner(),
                 marker,
             );
@@ -702,8 +728,15 @@ mod tests {
     }
 
     fn servidor_mock_imagen() -> String {
+        servidor_mock_imagen_color([5, 5, 5])
+    }
+
+    /// Como [`servidor_mock_imagen`], pero con un color a elección: dos
+    /// servidores con colores distintos dan imágenes con bytes distintos,
+    /// que es lo que permite detectar si el .xlsx terminó reusando una sola.
+    fn servidor_mock_imagen_color(color: [u8; 3]) -> String {
         let bytes = {
-            let img = RgbImage::from_pixel(20, 20, image::Rgb([5, 5, 5]));
+            let img = RgbImage::from_pixel(20, 20, image::Rgb(color));
             let mut buf = std::io::Cursor::new(Vec::new());
             img.write_to(&mut buf, image::ImageFormat::Png).unwrap();
             buf.into_inner()
@@ -830,5 +863,73 @@ mod tests {
         let releido = xlsx::reader::xlsx::read(&ruta).unwrap();
         let hoja = releido.get_sheet(&0).unwrap();
         assert_eq!(hoja.get_image_collection().len(), 1);
+    }
+
+    #[test]
+    fn cada_imagen_incrustada_recibe_un_nombre_de_archivo_distinto() {
+        let embedder = ImageEmbedder::new(ImageEmbedConfig::default(), DownloadConfig::default(), 4);
+        let nombres: HashSet<String> = (0..100).map(|_| embedder.nombre_imagen_unico()).collect();
+        assert_eq!(nombres.len(), 100, "ningún nombre puede repetirse");
+    }
+
+    #[tokio::test]
+    async fn dos_urls_distintas_producen_dos_imagenes_distintas_en_el_xlsx() {
+        // Regresión: todas las imágenes se incrustaban con el nombre fijo
+        // "img.png", que `umya-spreadsheet` usa como ruta real dentro del
+        // paquete (`xl/media/img.png`). Su escritor NO sobrescribe una
+        // entrada ya existente (`add_bin` → `check_file_exist`), así que solo
+        // se guardaba la PRIMERA imagen y todas las celdas apuntaban a ella:
+        // el usuario veía la misma foto repetida pese a tener URLs distintas
+        // y descargas correctas.
+        let tmp = tempfile::tempdir().unwrap();
+        let origen = tmp.path().join("origen.xlsx");
+        {
+            use rust_xlsxwriter::Workbook;
+            let mut wb = Workbook::new();
+            let hoja = wb.add_worksheet();
+            hoja.write(0, 0, "Sku").unwrap();
+            hoja.write(0, 1, "Fotos").unwrap();
+            hoja.write(1, 0, "A1").unwrap();
+            hoja.write(1, 1, servidor_mock_imagen_color([255, 0, 0])).unwrap();
+            hoja.write(2, 0, "A2").unwrap();
+            hoja.write(2, 1, servidor_mock_imagen_color([0, 0, 255])).unwrap();
+            wb.save(&origen).unwrap();
+        }
+
+        let embedder = ImageEmbedder::new(ImageEmbedConfig::default(), DownloadConfig::default(), 4);
+        let destino = tmp.path().join("con_imagenes.xlsx");
+        let (ruta, exitos, fallos, _hojas) = embedder
+            .procesar_archivo(&origen, &HashSet::new(), &destino, |_| {})
+            .await
+            .expect("debe procesar la hoja");
+        assert_eq!((exitos, fallos), (2, 0), "ambas descargas deben salir bien");
+
+        // Se inspecciona el .xlsx como zip (que es lo que abre Excel), no vía
+        // la representación en memoria: el bug estaba justo en la ESCRITURA
+        // del paquete, así que leerlo de vuelta por el mismo camino podría
+        // no exponerlo.
+        let archivo = std::fs::File::open(&ruta).unwrap();
+        let mut zip = zip::ZipArchive::new(archivo).unwrap();
+        let medias: Vec<String> = (0..zip.len())
+            .map(|i| zip.by_index(i).unwrap().name().to_string())
+            .filter(|n| n.starts_with("xl/media/"))
+            .collect();
+        assert_eq!(
+            medias.len(),
+            2,
+            "deben quedar DOS archivos de imagen en el paquete, uno por URL: {medias:?}"
+        );
+
+        let mut contenidos: Vec<Vec<u8>> = Vec::new();
+        for nombre in &medias {
+            let mut entrada = zip.by_name(nombre).unwrap();
+            let mut bytes = Vec::new();
+            entrada.read_to_end(&mut bytes).unwrap();
+            contenidos.push(bytes);
+        }
+        assert_ne!(
+            contenidos[0], contenidos[1],
+            "las dos imágenes deben tener contenido distinto (una roja y una azul), no la misma repetida"
+        );
     }
 }
