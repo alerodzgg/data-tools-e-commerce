@@ -357,10 +357,14 @@ impl ImageEmbedder {
 
         let indexados: Vec<(usize, Option<RgbImage>)> = stream::iter(tareas.iter().enumerate())
             .map(|(i, tarea)| async move {
-                let contenido = downloader.fetch(&tarea.url).await;
-                let imagen = match contenido {
-                    Some(bytes) => self.decodificar_y_redimensionar(&bytes),
-                    None => None,
+                // Este modo INSERTA imágenes en el xlsx: una que no se pudo
+                // traer simplemente queda sin insertar (se reporta agregada
+                // como "N con error" al final), así que acá solo interesa
+                // si hay bytes o no — la causa concreta del fallo la usa el
+                // modo de ANÁLISIS, que sí escribe un motivo por fila.
+                let imagen = match downloader.fetch(&tarea.url).await {
+                    Ok(bytes) => self.decodificar_y_redimensionar(&bytes),
+                    Err(_fallo) => None,
                 };
                 (i, imagen)
             })

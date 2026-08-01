@@ -16,11 +16,60 @@
 //! justo entre esos dos pasos no queda cubierto — aceptable para una
 //! herramienta batch interna, no para un servicio multi-tenant expuesto.
 
+use std::fmt;
 use std::net::{IpAddr, ToSocketAddrs};
 use std::time::Duration;
 
 use futures::StreamExt;
 use image::{ImageReader, Limits, RgbImage};
+
+/// Por qué falló una descarga. Antes `fetch` devolvía `Option<Vec<u8>>` y
+/// TODAS estas causas colapsaban en un único `None`, que el llamador
+/// reportaba con un texto fijo ("timeout o URL inválida") — apuntando a los
+/// datos del usuario incluso cuando la causa real era del servidor remoto
+/// (rate-limit, 404) o del propio filtro de seguridad. Con un archivo de
+/// URLs perfectamente válidas eso mandaba a revisar el lugar equivocado.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FalloDescarga {
+    /// El texto de la celda no se puede parsear como URL.
+    UrlInvalida,
+    /// Esquema distinto de http(s), o el host resuelve a una IP
+    /// privada/reservada (filtro anti-SSRF de este módulo).
+    HostBloqueado,
+    /// No respondió dentro de `DownloadConfig::timeout`, en ningún intento.
+    Timeout,
+    /// Error de red/DNS/TLS en todos los intentos.
+    ErrorDeRed,
+    /// Respondió con un status distinto de 200.
+    Http(u16),
+    /// Respondió 200 pero declarando un `Content-Type` que no es de imagen
+    /// (típico: una página de error HTML servida con status 200).
+    NoEsImagen,
+    /// El cuerpo excede [`MAX_RESPUESTA_BYTES`].
+    DemasiadoGrande,
+    /// La conexión se cortó a mitad del cuerpo.
+    CuerpoIncompleto,
+}
+
+impl fmt::Display for FalloDescarga {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UrlInvalida => write!(f, "URL mal formada"),
+            Self::HostBloqueado => {
+                write!(
+                    f,
+                    "host bloqueado (no es http/https, o resuelve a una IP privada)"
+                )
+            }
+            Self::Timeout => write!(f, "el servidor no respondió a tiempo"),
+            Self::ErrorDeRed => write!(f, "no se pudo conectar con el servidor"),
+            Self::Http(codigo) => write!(f, "el servidor respondió HTTP {codigo}"),
+            Self::NoEsImagen => write!(f, "la respuesta no es una imagen"),
+            Self::DemasiadoGrande => write!(f, "la imagen supera el límite de tamaño"),
+            Self::CuerpoIncompleto => write!(f, "la descarga se cortó a mitad"),
+        }
+    }
+}
 
 /// Cota de tamaño de una respuesta HTTP: ninguna imagen de producto real
 /// debería acercarse a esto; es un límite duro ante un servidor que mienta
@@ -212,21 +261,25 @@ impl AsyncImageDownloader {
         Self::new(cfg).map(Self::con_hosts_privados_permitidos)
     }
 
-    /// `None` si la URL apunta a un host privado/reservado, si no responde
-    /// tras agotar los reintentos, si responde con un error no-reintentable
-    /// (4xx, o 5xx en el último intento), o si el cuerpo excede
-    /// `MAX_RESPUESTA_BYTES`. 5xx transitorio y errores de red se reintentan
-    /// con backoff `cfg.backoff * (intento + 1)`.
-    pub async fn fetch(&self, url: &str) -> Option<Vec<u8>> {
+    /// Los bytes crudos, o [`FalloDescarga`] con la causa REAL del fallo
+    /// (ver ahí por qué importa distinguirlas). 5xx transitorio y errores de
+    /// red se reintentan con backoff `cfg.backoff * (intento + 1)`; el resto
+    /// corta de inmediato. Cuando se agotan los reintentos se reporta el
+    /// último fallo visto, no uno genérico.
+    pub async fn fetch(&self, url: &str) -> Result<Vec<u8>, FalloDescarga> {
         let url = url.trim();
-        let parsed = reqwest::Url::parse(url).ok()?;
+        let parsed = reqwest::Url::parse(url).map_err(|_| FalloDescarga::UrlInvalida)?;
         #[cfg(any(test, feature = "test-support"))]
         let host_ok = self.permitir_hosts_privados || host_es_publico(&parsed).await;
         #[cfg(not(any(test, feature = "test-support")))]
         let host_ok = host_es_publico(&parsed).await;
         if !host_ok {
-            return None;
+            return Err(FalloDescarga::HostBloqueado);
         }
+        // Se arrastra el último fallo concreto entre reintentos: si se agotan
+        // todos, el llamador recibe QUÉ pasó en el último intento (timeout,
+        // 503, red caída) en vez de una causa inventada por defecto.
+        let mut ultimo_fallo = FalloDescarga::ErrorDeRed;
         for intento in 0..=self.cfg.retries {
             match self.client.get(parsed.clone()).send().await {
                 Ok(resp) if resp.status() == reqwest::StatusCode::OK => {
@@ -237,22 +290,32 @@ impl AsyncImageDownloader {
                         // con status 200). Cortar acá evita bufferizar hasta
                         // `MAX_RESPUESTA_BYTES` de algo que `decode_and_resize`
                         // iba a rechazar de todas formas más adelante.
-                        return None;
+                        return Err(FalloDescarga::NoEsImagen);
                     }
                     return leer_bytes_acotado(resp).await;
                 }
                 Ok(resp) => {
-                    let reintentable = matches!(resp.status().as_u16(), 500 | 502 | 503 | 504);
+                    let codigo = resp.status().as_u16();
+                    ultimo_fallo = FalloDescarga::Http(codigo);
+                    let reintentable = matches!(codigo, 500 | 502 | 503 | 504);
                     if !reintentable || intento >= self.cfg.retries {
-                        return None;
+                        return Err(ultimo_fallo);
                     }
                 }
-                Err(_) if intento >= self.cfg.retries => return None,
-                Err(_) => {}
+                Err(error) => {
+                    ultimo_fallo = if error.is_timeout() {
+                        FalloDescarga::Timeout
+                    } else {
+                        FalloDescarga::ErrorDeRed
+                    };
+                    if intento >= self.cfg.retries {
+                        return Err(ultimo_fallo);
+                    }
+                }
             }
             tokio::time::sleep(self.cfg.backoff * (intento + 1)).await;
         }
-        None
+        Err(ultimo_fallo)
     }
 }
 
@@ -275,27 +338,27 @@ fn content_type_es_imagen_o_desconocido(resp: &reqwest::Response) -> bool {
 
 /// Lee el cuerpo en streaming, cortando ante `Content-Length` declarado o
 /// bytes reales que excedan `MAX_RESPUESTA_BYTES`.
-async fn leer_bytes_acotado(resp: reqwest::Response) -> Option<Vec<u8>> {
+async fn leer_bytes_acotado(resp: reqwest::Response) -> Result<Vec<u8>, FalloDescarga> {
     leer_bytes_acotado_con_cota(resp, MAX_RESPUESTA_BYTES).await
 }
 
 /// Núcleo de `leer_bytes_acotado`, parametrizado por la cota (en producción
 /// siempre es `MAX_RESPUESTA_BYTES`; separado así para poder ejercitar el
 /// corte con cuerpos de test chicos y rápidos).
-async fn leer_bytes_acotado_con_cota(resp: reqwest::Response, cota: usize) -> Option<Vec<u8>> {
+async fn leer_bytes_acotado_con_cota(resp: reqwest::Response, cota: usize) -> Result<Vec<u8>, FalloDescarga> {
     if resp.content_length().is_some_and(|n| n as usize > cota) {
-        return None;
+        return Err(FalloDescarga::DemasiadoGrande);
     }
     let mut buf = Vec::new();
     let mut stream = std::pin::pin!(resp.bytes_stream());
     while let Some(trozo) = stream.next().await {
-        let trozo = trozo.ok()?;
+        let trozo = trozo.map_err(|_| FalloDescarga::CuerpoIncompleto)?;
         if buf.len() + trozo.len() > cota {
-            return None;
+            return Err(FalloDescarga::DemasiadoGrande);
         }
         buf.extend_from_slice(&trozo);
     }
-    Some(buf)
+    Ok(buf)
 }
 
 /// Decodifica bytes crudos a RGB y opcionalmente reduce a `resize_max_dim`
@@ -385,7 +448,7 @@ mod tests {
         let dl = AsyncImageDownloader::new(cfg_rapida())
             .unwrap()
             .con_hosts_privados_permitidos();
-        assert!(dl.fetch(&url).await.is_none());
+        assert_eq!(dl.fetch(&url).await, Err(FalloDescarga::NoEsImagen));
         assert_eq!(
             contador.load(Ordering::SeqCst),
             1,
@@ -413,7 +476,11 @@ mod tests {
         let dl = AsyncImageDownloader::new(cfg_rapida())
             .unwrap()
             .con_hosts_privados_permitidos();
-        assert!(dl.fetch(&url).await.is_none());
+        assert_eq!(
+            dl.fetch(&url).await,
+            Err(FalloDescarga::Http(404)),
+            "el motivo debe conservar el status real, no una causa genérica"
+        );
         assert_eq!(contador.load(Ordering::SeqCst), 1, "404 no debe reintentar");
     }
 
@@ -432,7 +499,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fetch_agota_reintentos_y_devuelve_none() {
+    async fn fetch_agota_reintentos_y_reporta_el_ultimo_fallo_visto() {
         let (url, contador) = servidor_mock(vec![
             "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
         ]);
@@ -443,7 +510,11 @@ mod tests {
         let dl = AsyncImageDownloader::new(cfg)
             .unwrap()
             .con_hosts_privados_permitidos();
-        assert!(dl.fetch(&url).await.is_none());
+        assert_eq!(
+            dl.fetch(&url).await,
+            Err(FalloDescarga::Http(503)),
+            "agotar reintentos debe reportar el ÚLTIMO fallo real (503), no una causa por defecto"
+        );
         assert_eq!(
             contador.load(Ordering::SeqCst),
             2,
@@ -557,7 +628,11 @@ mod tests {
             "HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhola!",
         ]);
         let dl = AsyncImageDownloader::new(cfg_rapida()).unwrap();
-        assert!(dl.fetch(&url).await.is_none());
+        assert_eq!(
+            dl.fetch(&url).await,
+            Err(FalloDescarga::HostBloqueado),
+            "el motivo debe decir que lo bloqueó el filtro, no que la URL sea inválida"
+        );
         assert_eq!(
             contador.load(Ordering::SeqCst),
             0,
@@ -579,15 +654,52 @@ mod tests {
         let cliente = reqwest::Client::new();
 
         let resp = cliente.get(&url).send().await.unwrap();
-        assert!(
-            leer_bytes_acotado_con_cota(resp, 10).await.is_none(),
+        assert_eq!(
+            leer_bytes_acotado_con_cota(resp, 10).await,
+            Err(FalloDescarga::DemasiadoGrande),
             "un cuerpo de 100 bytes debe rechazarse con una cota de 10"
         );
 
         let resp = cliente.get(&url).send().await.unwrap();
         assert!(
-            leer_bytes_acotado_con_cota(resp, 1000).await.is_some(),
+            leer_bytes_acotado_con_cota(resp, 1000).await.is_ok(),
             "el mismo cuerpo debe aceptarse con una cota generosa"
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_distingue_una_url_mal_formada_de_un_fallo_de_red() {
+        // El caso que motivó todo esto: con un archivo de URLs VÁLIDAS, el
+        // texto fijo "timeout o URL inválida" mandaba a revisar los datos
+        // cuando el problema estaba del lado del servidor. Cada causa debe
+        // reportarse por separado.
+        let dl = AsyncImageDownloader::new(cfg_rapida())
+            .unwrap()
+            .con_hosts_privados_permitidos();
+        assert_eq!(dl.fetch("no soy una url").await, Err(FalloDescarga::UrlInvalida));
+    }
+
+    #[test]
+    fn cada_fallo_tiene_un_mensaje_propio_y_legible() {
+        // Ningún motivo debe quedar vacío ni repetido: el operador tiene que
+        // poder distinguir a simple vista qué le pasó a cada imagen.
+        let todos = [
+            FalloDescarga::UrlInvalida,
+            FalloDescarga::HostBloqueado,
+            FalloDescarga::Timeout,
+            FalloDescarga::ErrorDeRed,
+            FalloDescarga::Http(404),
+            FalloDescarga::NoEsImagen,
+            FalloDescarga::DemasiadoGrande,
+            FalloDescarga::CuerpoIncompleto,
+        ];
+        let mensajes: Vec<String> = todos.iter().map(|f| f.to_string()).collect();
+        assert!(mensajes.iter().all(|m| !m.trim().is_empty()));
+        let unicos: std::collections::HashSet<&String> = mensajes.iter().collect();
+        assert_eq!(unicos.len(), mensajes.len(), "mensajes duplicados: {mensajes:?}");
+        assert!(
+            FalloDescarga::Http(503).to_string().contains("503"),
+            "el status real debe aparecer en el mensaje"
         );
     }
 }

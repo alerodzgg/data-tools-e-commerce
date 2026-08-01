@@ -30,7 +30,7 @@ use tokio::sync::{oneshot, Mutex as AsyncMutex, Notify};
 use crate::batch::{columna_texto, materialize, CellResult, CellTask};
 use crate::checkpoint_store::{CheckpointEntry, CheckpointStore};
 use crate::detectors::ImageContext;
-use crate::downloader::{decode_and_resize, AsyncImageDownloader, DownloadConfig};
+use crate::downloader::{decode_and_resize, AsyncImageDownloader, DownloadConfig, FalloDescarga};
 use crate::pipeline::{ImagePipeline, PipelineVerdict};
 use crate::reader::Reader;
 use crate::url_helper;
@@ -250,7 +250,20 @@ pub fn contar_trabajo(
     Ok((pendientes, desde_cache))
 }
 
-const SIN_DESCARGA: &str = "No se pudo descargar (timeout o URL inválida)";
+/// Veredicto de rechazo con un motivo concreto — las tres causas que antes
+/// compartían el texto fijo "No se pudo descargar (timeout o URL inválida)"
+/// (fallo de descarga, imagen ilegible, y panic interno) ahora se distinguen
+/// en el reporte: apuntaban al dato del usuario incluso cuando el problema
+/// era del servidor remoto o del propio programa.
+fn rechazo(motivo: String) -> (Option<PipelineVerdict>, Option<ImageContext>) {
+    (
+        Some(PipelineVerdict {
+            approved: false,
+            reasons: vec![motivo],
+        }),
+        None,
+    )
+}
 
 /// Decode + detectores CPU en un solo salto a un thread de bloqueo (igual
 /// que `_decode_and_run_fast`: decodificar y correr D1-D3 juntos evita un
@@ -258,16 +271,11 @@ const SIN_DESCARGA: &str = "No se pudo descargar (timeout o URL inválida)";
 async fn decode_and_run_fast(
     pipeline: Arc<ImagePipeline>,
     resize_max_dim: Option<u32>,
-    content: Option<Vec<u8>>,
+    content: Result<Vec<u8>, FalloDescarga>,
 ) -> (Option<PipelineVerdict>, Option<ImageContext>) {
-    let Some(content) = content else {
-        return (
-            Some(PipelineVerdict {
-                approved: false,
-                reasons: vec![SIN_DESCARGA.to_string()],
-            }),
-            None,
-        );
+    let content = match content {
+        Ok(bytes) => bytes,
+        Err(fallo) => return rechazo(format!("No se pudo descargar: {fallo}")),
     };
 
     let resultado = tokio::task::spawn_blocking(move || {
@@ -281,13 +289,14 @@ async fn decode_and_run_fast(
     match resultado {
         Ok(Some((Some(v), _ctx))) => (Some(v), None),
         Ok(Some((None, ctx))) => (None, Some(ctx)),
-        _ => (
-            Some(PipelineVerdict {
-                approved: false,
-                reasons: vec![SIN_DESCARGA.to_string()],
-            }),
-            None,
-        ),
+        // Descargó bien, pero los bytes no son una imagen decodificable (o
+        // exceden los límites anti-bomba de `decode_and_resize`): es un
+        // problema del CONTENIDO, no de la descarga.
+        Ok(None) => rechazo("Descargada, pero no es una imagen válida o supera los límites".to_string()),
+        // Panic dentro de `spawn_blocking`: un bug de este programa, no del
+        // dato ni de la red. Antes se reportaba como si fuera un fallo de
+        // descarga, mandando a investigar el lugar equivocado.
+        Err(_join_error) => rechazo("Fallo interno al procesar la imagen".to_string()),
     }
 }
 
@@ -923,6 +932,84 @@ mod tests {
         assert!(
             avisos.iter().any(|m| m.contains("checkpoint")),
             "un fallo real de escritura del checkpoint debe avisarse, no descartarse en silencio con `let _ =`: {avisos:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn el_motivo_de_rechazo_dice_la_causa_real_no_un_texto_fijo() {
+        // Antes TODO fallo de descarga se reportaba como "No se pudo
+        // descargar (timeout o URL inválida)", incluso con URLs válidas y un
+        // problema del lado del servidor — mandando a revisar los datos del
+        // usuario cuando no eran el problema. Acá el fallo real es "conexión
+        // rechazada" (puerto sin listener), y el motivo debe decir eso, sin
+        // acusar a la URL de estar mal formada.
+        let df = df! {
+            "Imagen 1" => ["http://127.0.0.1:1/no-existe.jpg"],
+        }
+        .unwrap();
+        let url_columns = vec!["Imagen 1".to_string()];
+
+        let procesador = AsyncBatchProcessor::new(
+            DownloadConfig {
+                timeout: Duration::from_millis(200),
+                retries: 0,
+                backoff: Duration::from_millis(1),
+                ..DownloadConfig::default()
+            },
+            1,
+            Duration::from_millis(50),
+            4,
+            100,
+        );
+        // Sin etapa OCR: con `d4_d5_d6` activo y `reader: None`, `run_async`
+        // corta antes por su propio guard de invariante y nunca llega a
+        // intentar la descarga, que es justo lo que este test mide.
+        let pipeline = Arc::new(ImagePipeline::from_config(
+            crate::pipeline::PipelineConfig::default(),
+            crate::pipeline::DetectorToggles {
+                d4_d5_d6: false,
+                ..crate::pipeline::DetectorToggles::default()
+            },
+        ));
+        let tmp = tempfile::tempdir().unwrap();
+        let checkpoint = Arc::new(CheckpointStore::new(tmp.path().join("cp.jsonl")));
+
+        let outcome = procesador
+            .process(
+                &df,
+                &url_columns,
+                pipeline,
+                None,
+                checkpoint,
+                &HashMap::new(),
+                0,
+                |_| {},
+                |_| {},
+            )
+            .await
+            .unwrap();
+
+        let motivo = outcome
+            .df
+            .column("_imagen_motivo")
+            .unwrap()
+            .str()
+            .unwrap()
+            .get(0)
+            .unwrap()
+            .to_string();
+        // Un puerto sin listener da "conexión rechazada" en Linux pero
+        // agota el timeout en Windows: las dos son causas de RED concretas y
+        // correctas, así que se acepta cualquiera. Lo que el test fija es
+        // que se nombre una causa real, no el texto fijo de antes.
+        assert!(
+            motivo.contains(&FalloDescarga::ErrorDeRed.to_string())
+                || motivo.contains(&FalloDescarga::Timeout.to_string()),
+            "el motivo debe nombrar la causa real de red, no una genérica: {motivo:?}"
+        );
+        assert!(
+            !motivo.contains("URL inválida") && !motivo.contains("URL mal formada"),
+            "la URL es válida: el motivo no debe acusarla: {motivo:?}"
         );
     }
 

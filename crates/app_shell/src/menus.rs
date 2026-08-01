@@ -326,10 +326,18 @@ mod tests {
     #[test]
     fn confirmar_parser_acepta_variantes_en_espanol_sin_distinguir_mayusculas_ni_acentos() {
         for si in ["s", "S", "si", "Si", "sí", "SÍ", "  s  "] {
-            assert_eq!(confirmar_parser(si), Ok(true), "'{si}' debe interpretarse como sí");
+            assert_eq!(
+                confirmar_parser(si),
+                Ok(true),
+                "'{si}' debe interpretarse como sí"
+            );
         }
         for no in ["n", "N", "no", "No", "  no  "] {
-            assert_eq!(confirmar_parser(no), Ok(false), "'{no}' debe interpretarse como no");
+            assert_eq!(
+                confirmar_parser(no),
+                Ok(false),
+                "'{no}' debe interpretarse como no"
+            );
         }
         assert_eq!(confirmar_parser(""), Err(()));
         assert_eq!(confirmar_parser("tal vez"), Err(()));
