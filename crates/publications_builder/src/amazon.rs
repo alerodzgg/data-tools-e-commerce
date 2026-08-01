@@ -10,10 +10,11 @@ use crate::comunes::{
 };
 use crate::constantes::{verificar_columnas_reservadas, COL_IMAGENES, COL_OPCION, COL_PRECIO, COL_START_URL};
 
-static RE_REF_FINAL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"/ref=.*$").unwrap());
-static RE_AC_VARIANTE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\._AC_.*?_\.").unwrap());
-static RE_ID_AMAZON: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"/dp/([A-Z0-9]+)(?:[/?]|$)").unwrap());
-static RE_VISIT_THE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^visit\s+the\s*").unwrap());
+static RE_REF_FINAL: LazyLock<Regex> = LazyLock::new(|| commerce_core::regex_literal(r"/ref=.*$"));
+static RE_AC_VARIANTE: LazyLock<Regex> = LazyLock::new(|| commerce_core::regex_literal(r"\._AC_.*?_\."));
+static RE_ID_AMAZON: LazyLock<Regex> =
+    LazyLock::new(|| commerce_core::regex_literal(r"/dp/([A-Z0-9]+)(?:[/?]|$)"));
+static RE_VISIT_THE: LazyLock<Regex> = LazyLock::new(|| commerce_core::regex_literal(r"^visit\s+the\s*"));
 
 /// Tratamiento de imágenes de Amazon (alta resolución): reemplaza variantes
 /// como `._AC_SX466_.` por `._AC_SL1500_.`; si se pidió, vacía Imagen 2/3/4.

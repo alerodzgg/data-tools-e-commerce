@@ -93,7 +93,7 @@ pub(crate) fn serializar_bloque_xml(df: &DataFrame, columnas: &[String]) -> Core
 
     let n = df.height();
     let mut salida = String::with_capacity(n * 32);
-    let mut iters: Vec<_> = chunked.iter().map(|ca| ca.iter()).collect();
+    let mut iters: Vec<_> = chunked.iter().map(polars::prelude::ChunkedArray::iter).collect();
 
     for _ in 0..n {
         salida.push_str("<row>");

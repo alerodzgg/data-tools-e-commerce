@@ -1,9 +1,8 @@
 //! Capa de REGLAS DE NEGOCIO de 'Compatibilidades'/'Comprimidas': qué filas
 //! se descartan de 'Combinada' (exceso de caracteres, 'ERROR', 2+ 'NA'), el
-//! explode de 'Coincidencia' y el dedup final por menor precio. Separado del
-//! resto de `compatibilidad` (Ronda 9 de auditoría) porque antes vivía en un
-//! único archivo de 1552 líneas que mezclaba esta capa con parsing puro y
-//! con el motor de I/O particionado.
+//! explode de 'Coincidencia' y el dedup final por menor precio. El parsing
+//! puro vive en [`super::parsing`] y la orquestación de E/S en el módulo
+//! padre.
 
 use std::ops::Not;
 use std::sync::LazyLock;
@@ -16,8 +15,8 @@ use super::ModoCompatibilidad;
 use crate::comunes::columna_texto;
 use crate::constantes::COL_PRECIO;
 
-static RE_NA_FINAL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"-NA$").unwrap());
-static RE_GUION_DIGITOS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(\d)-(\d)").unwrap());
+static RE_NA_FINAL: LazyLock<Regex> = LazyLock::new(|| commerce_core::regex_literal(r"-NA$"));
+static RE_GUION_DIGITOS: LazyLock<Regex> = LazyLock::new(|| commerce_core::regex_literal(r"(\d)-(\d)"));
 
 fn dedup_por_combinada_menor_precio2(df: &DataFrame) -> CoreResult<DataFrame> {
     let opciones = SortMultipleOptions::default().with_nulls_last(true);

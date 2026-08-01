@@ -72,20 +72,46 @@ fn ejecutar_modo(
     Ok(())
 }
 
+/// Los modos del menú principal. El menú los ofrece por VALOR y `ejecutar`
+/// los resuelve con un `match` exhaustivo: agregar una variante no compila
+/// hasta contemplarla en el despacho.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Modo {
+    Unicas,
+    Compatibilidades,
+    Comprimidas,
+    Amazon,
+}
+
+impl Modo {
+    const TODOS: [Modo; 4] = [
+        Modo::Unicas,
+        Modo::Compatibilidades,
+        Modo::Comprimidas,
+        Modo::Amazon,
+    ];
+}
+
+impl std::fmt::Display for Modo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let etiqueta = match self {
+            Modo::Unicas => "Únicas",
+            Modo::Compatibilidades => "Compatibilidades",
+            Modo::Comprimidas => "Comprimidas",
+            Modo::Amazon => "Amazon",
+        };
+        write!(f, "{etiqueta}")
+    }
+}
+
 fn ejecutar() -> AppResult<()> {
     app_shell::mostrar_cabecera("PUBLICATIONS BUILDER — eBay / Amazon");
     let ruta_salida = app_shell::ruta_salida();
 
     loop {
-        let opciones = vec![
-            "Únicas".to_string(),
-            "Compatibilidades".to_string(),
-            "Comprimidas".to_string(),
-            "Amazon".to_string(),
-        ];
         let modo = match app_shell::menu_seleccionar_nav(
             "¿Qué tipo de procesamiento deseas ejecutar?",
-            opciones.clone(),
+            Modo::TODOS.to_vec(),
         ) {
             Ok(Some(m)) => m,
             Ok(None) => {
@@ -111,8 +137,8 @@ fn ejecutar() -> AppResult<()> {
             let stem = archivo.file_stem().unwrap_or_default().to_string_lossy();
             let archivo_salida = ruta_salida.join(format!("{stem}_procesado.xlsx"));
 
-            if modo == opciones[0] {
-                ejecutar_modo(&archivo, |avisar, progreso| {
+            match modo {
+                Modo::Unicas => ejecutar_modo(&archivo, |avisar, progreso| {
                     publications_builder::ejecutar_procesamiento_unicas(
                         &archivo,
                         &archivo_salida,
@@ -121,44 +147,46 @@ fn ejecutar() -> AppResult<()> {
                         progreso,
                     )
                     .map(|()| true)
-                })
-            } else if modo == opciones[1] || modo == opciones[2] {
-                let modo_interno = if modo == opciones[1] {
-                    publications_builder::ModoCompatibilidad::Repetidas
-                } else {
-                    publications_builder::ModoCompatibilidad::Comprimidas
-                };
-                let borrar_linea = modo_interno == publications_builder::ModoCompatibilidad::Repetidas
-                    && app_shell::menu_confirmar("¿Borrar la columna Y los valores de 'Linea'?", false)?
-                        .unwrap_or(false);
-                ejecutar_modo(&archivo, |avisar, progreso| {
-                    publications_builder::ejecutar_procesamiento_compatibilidad(
-                        &archivo,
-                        &archivo_salida,
-                        modo_interno,
-                        modificar_oem,
-                        borrar_linea,
-                        avisar,
-                        progreso,
-                    )
-                })
-            } else {
-                let borrar_imagenes_extra = app_shell::menu_confirmar(
-                    "¿Borrar el contenido de las columnas Imagen 2, 3 y 4?",
-                    false,
-                )?
-                .unwrap_or(false);
-                ejecutar_modo(&archivo, |avisar, progreso| {
-                    publications_builder::ejecutar_procesamiento_amazon(
-                        &archivo,
-                        &archivo_salida,
-                        modificar_oem,
-                        borrar_imagenes_extra,
-                        avisar,
-                        progreso,
-                    )
-                    .map(|()| true)
-                })
+                }),
+                Modo::Compatibilidades | Modo::Comprimidas => {
+                    let modo_interno = if modo == Modo::Compatibilidades {
+                        publications_builder::ModoCompatibilidad::Repetidas
+                    } else {
+                        publications_builder::ModoCompatibilidad::Comprimidas
+                    };
+                    let borrar_linea = modo_interno == publications_builder::ModoCompatibilidad::Repetidas
+                        && app_shell::menu_confirmar("¿Borrar la columna Y los valores de 'Linea'?", false)?
+                            .unwrap_or(false);
+                    ejecutar_modo(&archivo, |avisar, progreso| {
+                        publications_builder::ejecutar_procesamiento_compatibilidad(
+                            &archivo,
+                            &archivo_salida,
+                            modo_interno,
+                            modificar_oem,
+                            borrar_linea,
+                            avisar,
+                            progreso,
+                        )
+                    })
+                }
+                Modo::Amazon => {
+                    let borrar_imagenes_extra = app_shell::menu_confirmar(
+                        "¿Borrar el contenido de las columnas Imagen 2, 3 y 4?",
+                        false,
+                    )?
+                    .unwrap_or(false);
+                    ejecutar_modo(&archivo, |avisar, progreso| {
+                        publications_builder::ejecutar_procesamiento_amazon(
+                            &archivo,
+                            &archivo_salida,
+                            modificar_oem,
+                            borrar_imagenes_extra,
+                            avisar,
+                            progreso,
+                        )
+                        .map(|()| true)
+                    })
+                }
             }
         })();
 

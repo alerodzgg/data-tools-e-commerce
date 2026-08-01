@@ -20,6 +20,12 @@
 //! está escrito de forma genérica para poder enchufarle un criterio de
 //! color el día que se implemente ese lector.
 
+// Un panic en produccion aborta el proceso completo; en tests, en cambio,
+// `.unwrap()`/`.expect()` es la forma normal de fallar rapido. El lint se
+// activa solo fuera de `cfg(test)`. Las excepciones legitimas se anotan caso
+// por caso con `#[allow(...)]` y su justificacion.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 pub mod borrado;
 pub mod buscarv;
 pub mod caracteres;

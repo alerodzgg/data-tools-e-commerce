@@ -7,6 +7,12 @@
 //! aceptables. Los motores (`commerce_core`, `ocr_tools`, etc.) no dependen
 //! de este crate.
 
+// Un panic en produccion aborta el proceso completo; en tests, en cambio,
+// `.unwrap()`/`.expect()` es la forma normal de fallar rapido. El lint se
+// activa solo fuera de `cfg(test)`. Las excepciones legitimas se anotan caso
+// por caso con `#[allow(...)]` y su justificacion.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 pub mod diagnostico;
 pub mod dialogos;
 pub mod mensajes;

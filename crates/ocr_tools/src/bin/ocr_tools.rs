@@ -44,9 +44,30 @@ fn modelo(nombre: &str) -> PathBuf {
     ocr_tools::assets_dir().join("models").join(nombre)
 }
 
-const OPCION_ANALIZAR: &str = "Analizar imágenes (todos los detectores activos)";
-const OPCION_CONFIGURAR: &str = "Configurar detectores y analizar";
-const OPCION_INSERTAR: &str = "Insertar imágenes de URL en el Excel (columna nueva a la derecha)";
+/// Los modos del menú principal. El menú los ofrece por VALOR y
+/// `ciclo_principal` los resuelve con un `match` exhaustivo: agregar una
+/// variante no compila hasta contemplarla en el despacho.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Modo {
+    Analizar,
+    Configurar,
+    Insertar,
+}
+
+impl Modo {
+    const TODOS: [Modo; 3] = [Modo::Analizar, Modo::Configurar, Modo::Insertar];
+}
+
+impl std::fmt::Display for Modo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let etiqueta = match self {
+            Modo::Analizar => "Analizar imágenes (todos los detectores activos)",
+            Modo::Configurar => "Configurar detectores y analizar",
+            Modo::Insertar => "Insertar imágenes de URL en el Excel (columna nueva a la derecha)",
+        };
+        write!(f, "{etiqueta}")
+    }
+}
 
 fn configurar_detectores() -> FlujoResult<DetectorToggles> {
     let etiquetas = [
@@ -262,15 +283,12 @@ async fn ejecutar_archivo(
         app_shell::info("No hubo imágenes rechazadas.");
     }
 
-    println!(
-        "{}",
-        build_report(
-            imgs_analizadas,
-            imgs_rechazadas,
-            filas_total,
-            &xlsx_path.file_name().unwrap_or_default().to_string_lossy()
-        )
-    );
+    app_shell::info(&build_report(
+        imgs_analizadas,
+        imgs_rechazadas,
+        filas_total,
+        &xlsx_path.file_name().unwrap_or_default().to_string_lossy(),
+    ));
     checkpoint.delete()?;
     app_shell::info("Checkpoint eliminado.");
     Ok(())
@@ -324,12 +342,7 @@ async fn insertar_imagenes_en_archivos(archivos: &[PathBuf]) -> AppResult<()> {
 
 async fn ciclo_principal() -> AppResult<()> {
     loop {
-        let opciones = vec![
-            OPCION_ANALIZAR.to_string(),
-            OPCION_CONFIGURAR.to_string(),
-            OPCION_INSERTAR.to_string(),
-        ];
-        let eleccion = match app_shell::menu_seleccionar_nav("¿Qué quieres hacer?", opciones) {
+        let eleccion = match app_shell::menu_seleccionar_nav("¿Qué quieres hacer?", Modo::TODOS.to_vec()) {
             Ok(Some(e)) => e,
             Ok(None) => {
                 app_shell::info("Hasta luego.");
@@ -356,7 +369,7 @@ async fn ciclo_principal() -> AppResult<()> {
             continue;
         }
 
-        if eleccion == OPCION_INSERTAR {
+        if eleccion == Modo::Insertar {
             if let Err(e) = insertar_imagenes_en_archivos(&seleccionados).await {
                 match e {
                     AppError::Flujo(FlujoError::VolverAlMenu) => continue,
@@ -369,7 +382,7 @@ async fn ciclo_principal() -> AppResult<()> {
             continue;
         }
 
-        let toggles = if eleccion == OPCION_CONFIGURAR {
+        let toggles = if eleccion == Modo::Configurar {
             match configurar_detectores() {
                 Ok(t) => t,
                 Err(FlujoError::VolverAlMenu) => continue,

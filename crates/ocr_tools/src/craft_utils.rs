@@ -242,10 +242,10 @@ mod tests {
         assert_eq!(boxes.len(), 1);
         let xs: Vec<f32> = boxes[0].iter().map(|p| p.x).collect();
         let ys: Vec<f32> = boxes[0].iter().map(|p| p.y).collect();
-        assert!(xs.iter().cloned().fold(f32::INFINITY, f32::min) <= 10.5);
-        assert!(xs.iter().cloned().fold(f32::NEG_INFINITY, f32::max) >= 59.0);
-        assert!(ys.iter().cloned().fold(f32::INFINITY, f32::min) <= 10.5);
-        assert!(ys.iter().cloned().fold(f32::NEG_INFINITY, f32::max) >= 29.0);
+        assert!(xs.iter().copied().fold(f32::INFINITY, f32::min) <= 10.5);
+        assert!(xs.iter().copied().fold(f32::NEG_INFINITY, f32::max) >= 59.0);
+        assert!(ys.iter().copied().fold(f32::INFINITY, f32::min) <= 10.5);
+        assert!(ys.iter().copied().fold(f32::NEG_INFINITY, f32::max) >= 29.0);
     }
 
     #[test]

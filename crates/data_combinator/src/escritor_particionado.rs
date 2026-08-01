@@ -86,6 +86,8 @@ impl EscritorParticionado {
             }
             let tomar = (self.filas_por_archivo - self.filas_en_actual).min(n - pos);
             let bloque = chunk.slice(pos as i64, tomar);
+            // `nuevo_archivo()` unas líneas arriba garantiza `Some`.
+            #[allow(clippy::expect_used)]
             self.actual
                 .as_mut()
                 .expect("acabamos de crearlo")

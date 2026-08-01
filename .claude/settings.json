@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -v \"///\")",
+      "Bash(grep -v \"^\\\\s*//\")",
+      "Bash(python3 -c ' *)"
+    ]
+  }
+}

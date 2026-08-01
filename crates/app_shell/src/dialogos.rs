@@ -25,9 +25,8 @@ pub fn preguntar_hojas_excluir(archivos: &[PathBuf], etiqueta: &str) -> FlujoRes
             continue;
         }
         let Ok(libro) = abrir_libro(archivo) else {
-            // Antes: se descartaba en silencio, a diferencia del resto del
-            // proyecto (`commerce_core::lector` ya avisa en el mismo caso
-            // para `columnas_union`/`total_filas`/`iter_hojas_xlsx`).
+            // Se avisa en vez de descartar en silencio, igual que
+            // `commerce_core::lector` ante un archivo que no puede leer.
             warn(&format!(
                 "No se pudo leer '{}' (archivo corrupto o no es un xlsx válido) — se ignora al calcular hojas a excluir.",
                 archivo.display()
@@ -95,12 +94,11 @@ fn es_xlsx(archivo: &Path) -> bool {
 }
 
 /// Lista los archivos `.xlsx` de `carpeta`, ordenados alfabéticamente.
-/// `Err` solo si la carpeta en sí no se pudo LEER (no existe, sin permisos);
-/// antes este mismo filtro estaba duplicado, casi idéntico, en los binarios
-/// de `publications_builder` y `publications_validator`.
+/// `Err` solo si la carpeta en sí no se pudo LEER (no existe, sin permisos).
+/// Compartida por los binarios que ofrecen elegir un `.xlsx` de entrada.
 pub fn listar_xlsx(carpeta: &Path) -> std::io::Result<Vec<PathBuf>> {
     let mut archivos: Vec<PathBuf> = std::fs::read_dir(carpeta)?
-        .filter_map(|e| e.ok())
+        .filter_map(|r| r.ok())
         .map(|e| e.path())
         .filter(|p| p.is_file() && es_xlsx(p))
         .collect();
@@ -231,12 +229,9 @@ mod tests {
 
     #[test]
     fn archivo_corrupto_se_ignora_sin_panico_y_no_bloquea_a_los_demas() {
-        // Antes: `let Ok(libro) = abrir_libro(archivo) else { continue };`
-        // descartaba en silencio, sin ningún `warn` — inconsistente con el
-        // resto del proyecto (`commerce_core::lector` sí avisa en el mismo
-        // caso). Este test verifica el comportamiento observable: el
-        // archivo corrupto no rompe el flujo y las hojas del archivo bueno
-        // siguen disponibles para excluir.
+        // Verifica el comportamiento observable ante un archivo corrupto: no
+        // rompe el flujo, se avisa, y las hojas del archivo bueno siguen
+        // disponibles para excluir.
         let tmp = tempfile::tempdir().unwrap();
         let corrupto = tmp.path().join("corrupto.xlsx");
         std::fs::write(&corrupto, b"esto no es un xlsx valido").unwrap();

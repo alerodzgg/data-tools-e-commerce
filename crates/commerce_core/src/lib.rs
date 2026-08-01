@@ -10,13 +10,10 @@
 //! de progreso, ni `println!`). Cuando necesita avisar de algo, lo devuelve
 //! (`Result`) o lo pasa a un callback; quien llama decide cómo mostrarlo.
 
-// Política de la Ronda 9 de auditoría (ver docs/decisiones/0006-tests-reactivos-vs-invariantes.md):
-// un panic en código de producción de este crate tumba el proceso completo
-// de CUALQUIER binario que lo use — `commerce_core` es el motor compartido
-// por los 5. `cfg(test)` desactiva el lint para el propio código de test
-// (donde un `.unwrap()`/`.expect()` es la forma normal de fallar rápido), y
-// solo se activa cuando se compila el `--lib` real (no bajo `--cfg test`),
-// que es el único caso donde el código compilado es 100% de producción.
+// Un panic en producción de este crate tumba el proceso de CUALQUIER binario
+// que lo use: es el motor compartido por los cinco. El lint se desactiva bajo
+// `cfg(test)`, donde `.unwrap()`/`.expect()` es la forma normal de fallar
+// rápido.
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 mod alineacion;
@@ -30,6 +27,7 @@ pub mod lector;
 pub mod mojibake;
 pub mod orden_excel;
 pub mod particionado;
+pub mod regex_literal;
 pub mod rutas;
 mod xml;
 
@@ -46,5 +44,6 @@ pub use lector::{
 pub use mojibake::limpiar_mojibake;
 pub use orden_excel::{como_numero_finito, ordenar_excel_df, recortar_espacios_orden};
 pub use particionado::AcumuladorParticionado;
+pub use regex_literal::{regex_literal, regex_literal_sin_may};
 pub use rutas::{ruta_unica, RutaEscritaReal};
 pub use xml::MAX_FILAS_EXCEL;

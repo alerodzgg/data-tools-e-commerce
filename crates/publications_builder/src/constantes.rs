@@ -60,17 +60,14 @@ pub fn verificar_columnas_reservadas<'a>(
 /// Rangos de precio (en USD, límites inclusive) → precio de lista asignado.
 /// Se recorren en orden; el primer rango que contiene el precio gana.
 ///
-/// ATENCIÓN — tramo no monotónico sin explicar, detectado en la Ronda 8 de
-/// auditoría y aún pendiente de confirmación de negocio: `(175, 179) →
-/// 16980` es seguido por `(180, 184) → 16195` (BAJA) y luego `(185, 189) →
-/// 16680` (vuelve a subir). En cualquier otro tramo de la tabla el precio de
-/// lista sube o se mantiene a medida que sube el rango de precio de compra
-/// — este es el único que no. Puede ser una regla de negocio real (p. ej.
-/// un ajuste puntual de margen en ese tramo) o un error de captura; no se
-/// modifica sin que alguien de negocio lo confirme. El test
-/// `tramo_175_189_mantiene_su_forma_no_monotonica_conocida` FIJA el
-/// comportamiento actual — si cambia, debe ser un cambio deliberado de esta
-/// tabla, no un efecto secundario de otro fix.
+/// ATENCIÓN — tramo no monotónico sin explicar, pendiente de confirmación de
+/// negocio: `(175, 179) → 16980` es seguido por `(180, 184) → 16195` (BAJA)
+/// y luego `(185, 189) → 16680` (vuelve a subir). En todo otro tramo el
+/// precio de lista sube o se mantiene al subir el rango de compra; este es
+/// el único que no. Puede ser un ajuste puntual de margen o un error de
+/// captura: no se modifica sin confirmación. El test
+/// `tramo_175_189_mantiene_su_forma_no_monotonica_conocida` fija el
+/// comportamiento vigente para que cambiarlo sea deliberado.
 pub static RANGOS_PRECIOS: &[((i64, i64), i64)] = &[
     ((1, 14), 5749),
     ((15, 19), 6472),
@@ -198,15 +195,11 @@ mod tests {
 
     #[test]
     fn tramo_175_189_mantiene_su_forma_no_monotonica_conocida() {
-        // Ver el comentario de `RANGOS_PRECIOS`: este tramo sube-baja-sube
-        // sin explicación documentada, pendiente de confirmación de negocio
-        // desde la Ronda 8 de auditoría. Este test no valida que el
-        // comportamiento sea CORRECTO — solo fija que sea el mismo, para que
-        // un cambio futuro a la tabla (o a `precio_de_rango`) lo toque de
-        // forma deliberada y no como efecto secundario de otra cosa.
-        // Si estas tres aserciones empiezan a fallar porque la tabla ya se
-        // corrigió a monotónica, actualizar este test (no borrarlo) para
-        // reflejar la nueva forma confirmada por negocio.
+        // Ver `RANGOS_PRECIOS`: este tramo sube-baja-sube sin explicación,
+        // pendiente de confirmación de negocio. El test no valida que sea
+        // CORRECTO, solo que no cambie por accidente. Si empieza a fallar
+        // porque la tabla se corrigió a monotónica, actualizarlo (no
+        // borrarlo) con la forma confirmada.
         assert_eq!(precio_de_rango(177), Some(16980));
         assert_eq!(precio_de_rango(182), Some(16195));
         assert_eq!(precio_de_rango(187), Some(16680));

@@ -206,10 +206,8 @@ mod tests {
 
     #[test]
     fn run_slow_devuelve_error_en_vez_de_panic_si_no_hay_etapa_lenta_configurada() {
-        // Antes: `.expect(...)` — un caller que violara la invariante
-        // documentada (llamar a `run_slow` sin etapa lenta) tumbaba el
-        // proceso. `run_slow` ya devuelve `ort::Result`: la violación debe
-        // ser un `Err`, no un panic.
+        // `run_slow` devuelve `ort::Result`: violar su invariante (llamarlo
+        // sin etapa lenta) debe dar `Err`, no tumbar el proceso.
         use std::path::PathBuf;
 
         let toggles = DetectorToggles {

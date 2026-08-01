@@ -85,12 +85,10 @@ fn dedup_bucket(df_bucket: &DataFrame, avisar: &mut dyn FnMut(&str)) -> CoreResu
     let mut rank = vec![0u32; n];
     for indices in grupos.into_values() {
         let mut ordenado = indices;
-        ordenado.sort_by(|&a, &b| {
-            precio2_num[a]
-                .partial_cmp(&precio2_num[b])
-                .unwrap()
-                .then(a.cmp(&b))
-        });
+        // `total_cmp` es un orden total sobre floats: no puede fallar ni
+        // ante NaN, a diferencia de `partial_cmp`, que obligaría a un
+        // `unwrap` dependiente de que el filtro de arriba nunca cambie.
+        ordenado.sort_by(|&a, &b| precio2_num[a].total_cmp(&precio2_num[b]).then(a.cmp(&b)));
         for (r, idx) in ordenado.into_iter().enumerate() {
             rank[idx] = (r + 1) as u32;
         }
@@ -363,9 +361,7 @@ impl Procesador {
         // Mecanismo de particionado (buffer + spill a `.ipc` + semilla de
         // hash aleatoria por corrida) compartido con
         // `publications_builder::compatibilidad` vía
-        // `commerce_core::AcumuladorParticionado` — antes duplicado acá casi
-        // palabra por palabra, con el mismo bug de semilla fija corregido
-        // dos veces por separado en la Ronda 8 de auditoría.
+        // `commerce_core::AcumuladorParticionado`.
         let mut acumulador = AcumuladorParticionado::nuevo(n_part, 1_000_000)?;
 
         let mut stats = self.pasada1(escritor, &mut avisar, progreso, |nombre_hoja, validas| {
@@ -687,10 +683,10 @@ mod tests {
 
     #[test]
     fn cache_de_clasificacion_no_crece_mas_alla_del_limite_pero_sigue_clasificando_todo() {
-        // Antes: el caché de `Clasificador` crecía sin ningún tope con el
-        // número de títulos DISTINTOS de toda la corrida — un archivo
-        // patológico con muchísimos títulos únicos crecía en memoria sin
-        // límite. `limite_cache` se fija bajo (2) para poder ejercitar el
+        // El caché de `Clasificador` necesita un tope: sin él crece con el
+        // número de títulos DISTINTOS de toda la corrida, y un archivo con
+        // muchísimos únicos consume memoria sin límite. `limite_cache` se
+        // fija bajo (2) para poder ejercitar el
         // camino "caché lleno" sin procesar cientos de miles de títulos.
         let palabras = palabras_borradas();
         let mut clasificador = Clasificador {

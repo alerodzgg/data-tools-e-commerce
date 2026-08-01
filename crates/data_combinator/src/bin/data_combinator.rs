@@ -34,22 +34,43 @@ fn listar_archivos(entrada: &std::path::Path) -> Vec<PathBuf> {
 }
 
 fn elegir_division(formato: Formato) -> FlujoResult<Division> {
-    let mut opciones = vec!["No dividir (una sola salida)".to_string()];
-    if formato == Formato::Xlsx {
-        opciones.push("En hojas de N filas (dentro del mismo archivo)".to_string());
+    /// Cómo se reparte la salida. El menú devuelve la variante por VALOR:
+    /// comparar contra el texto mostrado dejaba la decisión atada a una
+    /// etiqueta que puede cambiar sin que nada lo advierta.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum ModoDivision {
+        Ninguna,
+        PorHojas,
+        PorArchivos,
     }
-    opciones.push("En archivos separados de N filas".to_string());
+    impl std::fmt::Display for ModoDivision {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                ModoDivision::Ninguna => write!(f, "No dividir (una sola salida)"),
+                ModoDivision::PorHojas => {
+                    write!(f, "En hojas de N filas (dentro del mismo archivo)")
+                }
+                ModoDivision::PorArchivos => write!(f, "En archivos separados de N filas"),
+            }
+        }
+    }
+
+    let mut opciones = vec![ModoDivision::Ninguna];
+    // Dividir en hojas solo tiene sentido en un formato con hojas.
+    if formato == Formato::Xlsx {
+        opciones.push(ModoDivision::PorHojas);
+    }
+    opciones.push(ModoDivision::PorArchivos);
 
     // `None`/"no dividir" ya es un valor de negocio legítimo: no se ofrece
     // "cancelar" aparte (colisionaría), solo "volver al menú".
-    let modo = app_shell::menu_seleccionar_nav("¿Dividir la salida?", opciones)?;
-    let Some(modo) = modo else {
+    let Some(modo) = app_shell::menu_seleccionar_nav("¿Dividir la salida?", opciones)? else {
         return Ok(Division::Ninguna);
     };
-    if modo == "No dividir (una sola salida)" {
+    if modo == ModoDivision::Ninguna {
         return Ok(Division::Ninguna);
     }
-    let es_hojas = modo == "En hojas de N filas (dentro del mismo archivo)";
+    let es_hojas = modo == ModoDivision::PorHojas;
     let unidad = if es_hojas { "hoja" } else { "archivo" };
 
     let filas = loop {
@@ -123,33 +144,46 @@ fn ejecutar() -> AppResult<()> {
         return Ok(());
     }
 
-    let opciones = vec![
-        format!("Todas las columnas ({})", columnas_disp.len()),
-        "Elegir columnas específicas…".to_string(),
-    ];
-    // Compara contra `opciones[0]` (el propio texto recién construido, no un
-    // prefijo hardcodeado aparte): si la etiqueta cambia acá arriba, la
-    // comparación de abajo sigue en sincro sola, sin poder desincronizarse.
-    let elegido = match app_shell::menu_seleccionar_nav("¿Qué columnas incluir?", opciones.clone())? {
-        Some(v) => v,
-        None => {
-            app_shell::info("Hasta luego.");
-            return Ok(());
+    /// Qué columnas entran en la salida.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum SeleccionColumnas {
+        Todas,
+        Elegir,
+    }
+    struct OpcionColumnas {
+        cual: SeleccionColumnas,
+        etiqueta: String,
+    }
+    impl std::fmt::Display for OpcionColumnas {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{}", self.etiqueta)
         }
+    }
+
+    let opciones = vec![
+        OpcionColumnas {
+            cual: SeleccionColumnas::Todas,
+            etiqueta: format!("Todas las columnas ({})", columnas_disp.len()),
+        },
+        OpcionColumnas {
+            cual: SeleccionColumnas::Elegir,
+            etiqueta: "Elegir columnas específicas…".to_string(),
+        },
+    ];
+    let Some(elegido) = app_shell::menu_seleccionar_nav("¿Qué columnas incluir?", opciones)? else {
+        app_shell::info("Hasta luego.");
+        return Ok(());
     };
-    let columnas = if elegido == opciones[0] {
-        columnas_disp.clone()
-    } else {
-        app_shell::menu_multiple(
+    let columnas = match elegido.cual {
+        SeleccionColumnas::Todas => columnas_disp.clone(),
+        SeleccionColumnas::Elegir => app_shell::menu_multiple(
             "Columnas a incluir (Enter sin marcar = cancelar):",
             columnas_disp.clone(),
-        )?
+        )?,
     };
-    // Antes: sin marcar ninguna columna, `columnas` quedaba vacío y
-    // `alinear_columnas`/`escritor.escribir` seguían de largo sin error —
-    // el resultado final era "¡Listo! 0 filas combinadas" con un archivo de
-    // salida vacío, en vez de cancelar como ya hace la selección de
-    // archivos (arriba) ante el mismo "no marqué nada".
+    // Sin ninguna columna marcada hay que cancelar: el resto del flujo
+    // seguiría sin error y produciría "0 filas combinadas" con un archivo
+    // vacío, en vez del mismo aviso que da la selección de archivos.
     if columnas.is_empty() {
         app_shell::warn("No se marcó ninguna columna. Operación cancelada.");
         return Ok(());

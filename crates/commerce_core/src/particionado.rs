@@ -3,17 +3,11 @@
 //! un streaming largo, no solo el sub-bloque en curso) sin cargar el archivo
 //! completo en RAM.
 //!
-//! Extraído de dos implementaciones antes duplicadas casi palabra por
-//! palabra — `publications_builder::compatibilidad::AcumuladorProcesadas` y
-//! el método privado `procesar_particionado` de
-//! `publications_validator::procesador::Procesador` — que habían llegado a
-//! tener el mismo bug (semilla de hash fija, corregida por separado en cada
-//! copia en la Ronda 8 de auditoría) por vivir en dos archivos distintos. La
-//! POLÍTICA de qué hacer con cada partición ya reunida (qué dedup aplicar,
-//! en qué hoja escribir) sigue siendo una diferencia de negocio real entre
-//! ambos crates, así que se deja al llamador vía el closure de
-//! [`AcumuladorParticionado::finalizar`] — solo el MECANISMO de particionado
-//! se comparte acá.
+//! Solo el MECANISMO de particionado vive acá, compartido por
+//! `publications_builder` y `publications_validator`. La POLÍTICA de qué
+//! hacer con cada partición ya reunida (qué dedup aplicar, en qué hoja
+//! escribir) es una diferencia de negocio real entre ambos y queda al
+//! llamador, vía el closure de [`AcumuladorParticionado::finalizar`].
 
 use std::collections::hash_map::RandomState;
 use std::hash::BuildHasher;

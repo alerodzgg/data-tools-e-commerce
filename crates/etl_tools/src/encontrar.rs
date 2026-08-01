@@ -12,7 +12,8 @@ use crate::lectura::iter_hojas_valores;
 /// Nombre canónico que el lector asigna a una cabecera VACÍA (`Columna_N`):
 /// si la "primera fila es una palabra" pero la celda estaba vacía, NO es
 /// palabra real.
-static RE_COLUMNA_CANONICA: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^Columna_\d+$").unwrap());
+static RE_COLUMNA_CANONICA: LazyLock<Regex> =
+    LazyLock::new(|| commerce_core::regex_literal(r"^Columna_\d+$"));
 
 /// Convierte la lista de palabras en el lookup `[clave_norm, _rank,
 /// Palabra_encontrada]` que consume el motor del BUSCARV parcial. `_rank` se

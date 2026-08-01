@@ -209,16 +209,15 @@ mod tests {
 
         let lotes: Vec<DataFrame> =
             LotesCsv::abrir(&ruta, UmbralesLoteCsv::default())?.collect::<CoreResult<_>>()?;
-        let total: usize = lotes.iter().map(|d| d.height()).sum();
+        let total: usize = lotes.iter().map(polars::prelude::DataFrame::height).sum();
         assert_eq!(total, 3);
         Ok(())
     }
 
     #[test]
     fn lotes_csv_descarta_filas_con_bytes_invalidos_y_lo_reporta() -> CoreResult<()> {
-        // Antes: una fila con error de lectura (p. ej. bytes no UTF-8) se
-        // descartaba en silencio, sin contador ni forma de avisarle al
-        // usuario — a diferencia del resto del crate, que siempre avisa.
+        // Una fila ilegible (p. ej. bytes no UTF-8) se descarta, pero se
+        // cuenta y se avisa: descartarla en silencio ocultaría pérdida real.
         let tmp = tempfile::tempdir().unwrap();
         let ruta = tmp.path().join("invalido.csv");
         let mut bytes = Vec::new();

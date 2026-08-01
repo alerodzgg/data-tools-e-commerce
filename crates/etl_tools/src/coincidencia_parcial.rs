@@ -33,7 +33,8 @@ pub enum OpcionMultiple {
     Todas,
 }
 
-static RE_NO_ALFANUM_PARCIAL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[^0-9a-zñ]+").unwrap());
+static RE_NO_ALFANUM_PARCIAL: LazyLock<Regex> =
+    LazyLock::new(|| commerce_core::regex_literal(r"[^0-9a-zñ]+"));
 
 /// Texto normalizado para match parcial: minúsculas, tildes transliteradas
 /// (`ñ` conservada, ver [`quitar_tildes`]), símbolos→espacio (colapsado), sin
@@ -125,8 +126,8 @@ pub fn cargar_tabla_parcial(
         }
         return Ok(DataFrame::new_infer_height(cols)?);
     }
-    if partes.len() == 1 {
-        return Ok(partes.into_iter().next().unwrap());
+    if let [unica] = partes.as_slice() {
+        return Ok(unica.clone());
     }
     reducir_parcial(&concatenar_vertical(partes)?, columnas_traer, unir_multiples)
 }

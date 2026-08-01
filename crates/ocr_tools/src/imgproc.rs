@@ -10,9 +10,8 @@ pub const VARIANCE: [f32; 3] = [0.229, 0.224, 0.225];
 
 /// Redimensiona el lado mayor a `max_dim` preservando la relación de aspecto
 /// (sin lienzo/relleno, a diferencia de [`resize_aspect_ratio`]); `img` tal
-/// cual si ya está dentro de la cota. Compartida entre
-/// `downloader::decode_and_resize` y `text_detector::prepare_for_ocr`, que
-/// antes repetían esta misma lógica casi idéntica.
+/// cual si ya está dentro de la cota. Compartida por
+/// `downloader::decode_and_resize` y `text_detector::prepare_for_ocr`.
 pub fn resize_max_dim(img: &RgbImage, max_dim: u32) -> RgbImage {
     let (w, h) = img.dimensions();
     let side = w.max(h);

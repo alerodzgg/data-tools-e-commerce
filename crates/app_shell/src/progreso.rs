@@ -4,6 +4,9 @@ use indicatif::{ProgressBar, ProgressStyle};
 
 pub fn barra_progreso(descripcion: &str, total: u64) -> ProgressBar {
     let barra = ProgressBar::new(total);
+    // Plantilla literal, constante del código: un error acá es de
+    // programación y debe verse en la primera corrida.
+    #[allow(clippy::unwrap_used)]
     barra.set_style(
         ProgressStyle::with_template("{spinner:.green} {msg} [{bar:40.green}] {pos}/{len} ({eta})")
             .unwrap()

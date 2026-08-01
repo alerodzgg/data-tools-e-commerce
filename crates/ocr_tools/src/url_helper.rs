@@ -17,8 +17,8 @@ const IMAGE_EXT_SUFFIXES: [&str; 7] = [".jpg", ".jpeg", ".png", ".webp", ".bmp",
 // El esquema es case-insensitive (solo esa parte, vía el grupo `(?i:...)`):
 // un origen que traiga "Http://" o "HTTPS://" (p. ej. autocorrección de
 // Excel) es tan válido como en minúsculas.
-#[allow(clippy::unwrap_used)] // patrón regex literal fijo, válido por construcción
-static URL_PATTERN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i:https?)://[^\s,;]+").unwrap());
+static URL_PATTERN: LazyLock<Regex> =
+    LazyLock::new(|| commerce_core::regex_literal(r"(?i:https?)://[^\s,;]+"));
 
 /// `True` si `value` es una URL http(s) cuyo path (sin query string) termina
 /// en una extensión de imagen conocida. El esquema se compara sin distinguir

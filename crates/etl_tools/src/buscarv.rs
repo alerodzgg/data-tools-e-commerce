@@ -78,8 +78,8 @@ pub fn cargar_tabla_busqueda(
         }
         return Ok(DataFrame::new_infer_height(cols)?);
     }
-    if partes.len() == 1 {
-        return Ok(partes.into_iter().next().unwrap());
+    if let [unica] = partes.as_slice() {
+        return Ok(unica.clone());
     }
     reducir_exacta(&concatenar_vertical(partes)?, columnas_traer, unir_multiples)
 }

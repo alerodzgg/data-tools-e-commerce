@@ -11,11 +11,11 @@ use std::path::PathBuf;
 use ocr_tools::reader::Reader;
 use serde::Deserialize;
 
+/// El fixture trae además un `confidence` por resultado que este test no
+/// contrasta; `serde` ignora por defecto los campos que no se declaran.
 #[derive(Deserialize)]
 struct FixtureResultado {
     text: String,
-    #[allow(dead_code)]
-    confidence: f32,
 }
 
 fn manifest_dir() -> PathBuf {

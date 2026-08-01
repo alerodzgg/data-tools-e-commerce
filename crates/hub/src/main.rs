@@ -112,25 +112,40 @@ fn configurar_rutas() -> app_shell::FlujoResult<()> {
     app_shell::info(&format!("Salida actual:  {}", app_shell::ruta_salida().display()));
     app_shell::warn("Los cambios valen solo para esta sesión.");
 
-    let opciones = vec![
-        "Carpeta de ENTRADA (de dónde se leen los archivos)".to_string(),
-        "Carpeta de SALIDA (dónde se guardan los resultados)".to_string(),
-        "Las dos".to_string(),
-    ];
-    let Some(cual) = app_shell::menu_seleccionar_nav("¿Qué quieres cambiar?", opciones.clone())? else {
+    /// Qué carpeta(s) se van a cambiar.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum CualRuta {
+        Entrada,
+        Salida,
+        Ambas,
+    }
+    impl std::fmt::Display for CualRuta {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                CualRuta::Entrada => write!(f, "Carpeta de ENTRADA (de dónde se leen los archivos)"),
+                CualRuta::Salida => write!(f, "Carpeta de SALIDA (dónde se guardan los resultados)"),
+                CualRuta::Ambas => write!(f, "Las dos"),
+            }
+        }
+    }
+    let Some(cual) = app_shell::menu_seleccionar_nav(
+        "¿Qué quieres cambiar?",
+        vec![CualRuta::Entrada, CualRuta::Salida, CualRuta::Ambas],
+    )?
+    else {
         return Ok(());
     };
 
     let mut nueva_entrada = None;
     let mut nueva_salida = None;
-    if cual == opciones[0] || cual == opciones[2] {
+    if matches!(cual, CualRuta::Entrada | CualRuta::Ambas) {
         let texto = app_shell::pedir_texto("Nueva carpeta de ENTRADA (vacío = dejarla como está):")?
             .unwrap_or_default();
         if !texto.is_empty() {
             nueva_entrada = Some(PathBuf::from(texto));
         }
     }
-    if cual == opciones[1] || cual == opciones[2] {
+    if matches!(cual, CualRuta::Salida | CualRuta::Ambas) {
         let texto = app_shell::pedir_texto("Nueva carpeta de SALIDA (vacío = dejarla como está):")?
             .unwrap_or_default();
         if !texto.is_empty() {
@@ -156,36 +171,52 @@ fn configurar_rutas() -> app_shell::FlujoResult<()> {
 fn ejecutar() -> app_shell::FlujoResult<()> {
     app_shell::mostrar_cabecera("DATA TOOLS E-COMMERCE");
 
+    /// Entrada del menú principal. Las herramientas se arman desde
+    /// [`HERRAMIENTAS`] y llevan la referencia consigo, de modo que elegir
+    /// una devuelve la herramienta misma en vez de un texto que haya que
+    /// volver a buscar en la lista.
+    enum Entrada {
+        Lanzar(&'static Herramienta),
+        CambiarRutas(String),
+        Salir,
+    }
+    impl std::fmt::Display for Entrada {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                Entrada::Lanzar(h) => write!(f, "{}", h.descripcion),
+                Entrada::CambiarRutas(etiqueta) => write!(f, "{etiqueta}"),
+                Entrada::Salir => write!(f, "Salir"),
+            }
+        }
+    }
+
     loop {
-        let mut opciones: Vec<String> = HERRAMIENTAS.iter().map(|h| h.descripcion.to_string()).collect();
-        let idx_rutas = opciones.len();
-        opciones.push(format!(
+        let mut opciones: Vec<Entrada> = HERRAMIENTAS.iter().map(Entrada::Lanzar).collect();
+        opciones.push(Entrada::CambiarRutas(format!(
             "⚙  Cambiar rutas  (entrada: {}, salida: {})",
             app_shell::ruta_entrada().display(),
             app_shell::ruta_salida().display()
-        ));
-        let idx_salir = opciones.len();
-        opciones.push("Salir".to_string());
+        )));
+        opciones.push(Entrada::Salir);
 
-        let Some(eleccion) = app_shell::menu_seleccionar("¿Qué quieres hacer?", opciones.clone())? else {
+        let Some(eleccion) = app_shell::menu_seleccionar("¿Qué quieres hacer?", opciones)? else {
             app_shell::info("Hasta luego.");
             return Ok(());
         };
 
-        if eleccion == opciones[idx_salir] {
-            app_shell::info("Hasta luego.");
-            return Ok(());
-        }
-        if eleccion == opciones[idx_rutas] {
-            if let Err(error) = configurar_rutas() {
-                if !matches!(error, app_shell::FlujoError::VolverAlMenu) {
-                    app_shell::warn(&format!("No se pudo configurar las rutas: {error}"));
+        match eleccion {
+            Entrada::Salir => {
+                app_shell::info("Hasta luego.");
+                return Ok(());
+            }
+            Entrada::CambiarRutas(_) => {
+                if let Err(error) = configurar_rutas() {
+                    if !matches!(error, app_shell::FlujoError::VolverAlMenu) {
+                        app_shell::warn(&format!("No se pudo configurar las rutas: {error}"));
+                    }
                 }
             }
-            continue;
-        }
-        if let Some(herramienta) = HERRAMIENTAS.iter().find(|h| h.descripcion == eleccion) {
-            ejecutar_herramienta(herramienta);
+            Entrada::Lanzar(herramienta) => ejecutar_herramienta(herramienta),
         }
     }
 }
@@ -256,14 +287,9 @@ mod tests {
 
     #[test]
     fn herramientas_tiene_binario_y_descripcion_unicos() {
-        // `ejecutar()` selecciona la herramienta buscando por IGUALDAD de
-        // `descripcion` contra la opción elegida en el menú (`HERRAMIENTAS
-        // .iter().find(|h| h.descripcion == eleccion)`): si dos entradas
-        // compartieran la misma descripción, `find` siempre devolvería la
-        // PRIMERA sin importar cuál eligió el usuario, igual que el bug ya
-        // corregido en `elegir_archivo` (ver `app_shell::menus`). `binario`
-        // también debe ser único: de lo contrario dos entradas lanzarían el
-        // mismo ejecutable.
+        // `binario` único: dos entradas con el mismo lanzarían el mismo
+        // ejecutable. `descripcion` única: son las etiquetas del menú, y dos
+        // idénticas serían indistinguibles para quien elige.
         let mut binarios: Vec<&str> = HERRAMIENTAS.iter().map(|h| h.binario).collect();
         let mut descripciones: Vec<&str> = HERRAMIENTAS.iter().map(|h| h.descripcion).collect();
         binarios.sort_unstable();

@@ -170,9 +170,8 @@ pub fn contar_filas_hoja(libro: &mut LibroXlsx, archivo: &Path, hoja: &str) -> C
 /// archivos (nombres canónicos), saltando las hojas de `excluir`.
 ///
 /// `avisar`: se llama con un mensaje si un archivo/hoja no se puede leer (y
-/// se salta), igual que en [`iter_hojas_xlsx`] — antes esta función y
-/// [`total_filas`] eran las únicas del módulo que silenciaban esos casos sin
-/// ningún canal de aviso.
+/// se salta), igual que en [`iter_hojas_xlsx`]. Sin ese canal, un archivo
+/// ilegible sería indistinguible de uno sin columnas.
 pub fn columnas_union(
     archivos: &[PathBuf],
     excluir: Option<&[&str]>,
@@ -208,7 +207,7 @@ pub fn columnas_union(
                 .with_infer_schema_length(Some(0))
                 .with_n_rows(Some(0))
                 .finish()
-                .and_then(|lf| lf.collect())
+                .and_then(polars::prelude::LazyFrame::collect)
             {
                 Ok(df) => agregar(
                     df.get_column_names().iter().map(|s| s.to_string()).collect(),
@@ -335,7 +334,6 @@ pub fn total_filas(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use calamine::Sheets;
 
     fn escribir_libro_prueba(ruta: &Path) {
         use rust_xlsxwriter::Workbook;
@@ -410,9 +408,6 @@ mod tests {
         );
         Ok(())
     }
-
-    #[allow(dead_code)]
-    fn _tipo_check(_s: Sheets<std::io::BufReader<std::fs::File>>) {}
 
     #[test]
     fn abrir_libro_permite_leer_hojas_por_nombre_en_cualquier_orden() {

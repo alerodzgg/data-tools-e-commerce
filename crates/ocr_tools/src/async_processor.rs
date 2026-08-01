@@ -294,8 +294,8 @@ async fn decode_and_run_fast(
         // problema del CONTENIDO, no de la descarga.
         Ok(None) => rechazo("Descargada, pero no es una imagen válida o supera los límites".to_string()),
         // Panic dentro de `spawn_blocking`: un bug de este programa, no del
-        // dato ni de la red. Antes se reportaba como si fuera un fallo de
-        // descarga, mandando a investigar el lugar equivocado.
+        // dato ni de la red. Se reporta aparte para no mandar a revisar la
+        // URL o la conexión.
         Err(_join_error) => rechazo("Fallo interno al procesar la imagen".to_string()),
     }
 }
@@ -712,12 +712,10 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn una_rafaga_de_envios_no_espera_el_timeout_completo_por_cada_uno() {
-        // batch_size=1 + batch_timeout LARGO: si `run` esperara notify/timeout
-        // sin chequear primero si el buffer ya tiene ítems (el bug que este
-        // test cubre), cada envío de la ráfaga más allá del primero tendría
-        // que agotar los 10s completos antes de despacharse — con tiempo
-        // pausado, esto haría que el test tardara ~50s de tiempo VIRTUAL en
-        // vez de resolverse casi de inmediato.
+        // batch_size=1 + batch_timeout LARGO: `run` debe chequear si el
+        // buffer ya tiene ítems ANTES de esperar notify/timeout. Sin eso,
+        // cada envío de la ráfaga más allá del primero agotaría los 10s
+        // completos y el test tardaría ~50s de tiempo virtual.
         let batcher = OcrBatcher::new(1, Duration::from_secs(10));
         let batcher_run = batcher.clone();
         let tarea_run = tokio::spawn(async move {
@@ -1015,10 +1013,9 @@ mod tests {
 
     #[test]
     fn si_falla_la_inferencia_ocr_el_veredicto_es_rechazo_no_aprobacion_por_defecto() {
-        // Antes de este fix, un `Err` de `run_slow` (fallo real del motor
-        // ONNX, no solo de descarga) se traducía en `approved: true` por
-        // defecto — el mismo bug de fail-open que ya se había corregido para
-        // la inicialización del downloader, pero en otro punto de entrada.
+        // Un `Err` de `run_slow` (fallo real del motor ONNX) no puede
+        // traducirse en `approved: true`: una imagen que nunca se evaluó
+        // debe quedar rechazada, no colarse por defecto.
         let error = ort::Error::new("fallo de inferencia simulado");
         let veredicto = veredicto_de_resultado_ocr(Err(error));
         assert!(!veredicto.approved);
@@ -1033,11 +1030,10 @@ mod tests {
 
     #[test]
     fn un_panic_durante_la_inferencia_se_traduce_en_rechazo_en_vez_de_propagarse() {
-        // Antes de este fix, un panic dentro de `run_slow` (p. ej. un modelo
-        // ONNX con una forma de tensor inesperada) tumbaba el proceso
-        // completo — perdiendo el resto del lote y cualquier resultado del
-        // checkpoint aún no volcado a disco. `veredicto_aislando_panic` debe
-        // contener el panic y devolver un rechazo, sin propagarlo.
+        // Un panic dentro de `run_slow` (p. ej. un modelo ONNX con forma de
+        // tensor inesperada) tumbaría el proceso y perdería el resto del lote
+        // más lo aún no volcado al checkpoint: debe contenerse y devolver un
+        // rechazo.
         let veredicto = veredicto_aislando_panic(std::panic::AssertUnwindSafe(
             || -> ort::Result<PipelineVerdict> { panic!("panic simulado de inferencia OCR") },
         ));

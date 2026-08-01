@@ -29,7 +29,12 @@ pub fn clasificar_uno(
     marcas_lower: &HashSet<String>,
 ) -> (String, Option<String>) {
     if let Some(caps) = patrones.prohibidas.captures(titulo) {
-        let palabra = caps.get(1).unwrap().as_str();
+        // El grupo 1 existe por construcción del patrón (ver `Patrones`), pero
+        // se resuelve sin `unwrap`: si el patrón cambiara, se reporta la
+        // coincidencia completa en vez de abortar el proceso.
+        let palabra = caps
+            .get(1)
+            .map_or_else(|| titulo.to_string(), |m| m.as_str().to_string());
         return (titulo.to_string(), Some(format!("Palabra prohibida({palabra})")));
     }
 

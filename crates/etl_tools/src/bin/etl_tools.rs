@@ -29,9 +29,8 @@ enum AppError {
 
 type AppResult<T> = Result<T, AppError>;
 
-/// Tamaño de bloque para las escrituras en streaming de este binario (evita
-/// materializar el DataFrame completo de una sola vez). Antes repetido como
-/// literal `200_000` en 4 sitios sin nombrar.
+/// Tamaño de bloque para las escrituras en streaming de este binario: evita
+/// materializar el DataFrame completo de una sola vez.
 const FILAS_POR_BLOQUE_ESCRITURA: usize = 200_000;
 
 // ════════════════════════════════════════════════════════════════════════
@@ -42,7 +41,7 @@ fn listar_archivos_soportados(entrada: &Path) -> Vec<PathBuf> {
     let mut archivos: Vec<PathBuf> = std::fs::read_dir(entrada)
         .into_iter()
         .flatten()
-        .filter_map(|e| e.ok())
+        .filter_map(|r| r.ok())
         .map(|e| e.path())
         .filter(|p| {
             p.is_file()
@@ -155,7 +154,7 @@ fn procesar_por_palabra(archivo: &Path, ruta_salida: &Path) -> AppResult<()> {
         .unwrap_or_default();
     let palabras: Vec<String> = entrada
         .split(',')
-        .map(|p| p.trim())
+        .map(str::trim)
         .filter(|p| !p.is_empty())
         .map(regex::escape)
         .collect();
@@ -280,27 +279,25 @@ fn buscar_duplicados(ruta_salida: &Path) -> AppResult<()> {
     }
 
     let stem = archivo.file_stem().unwrap_or_default().to_string_lossy();
-    let opciones = vec![
-        format!(
-            "Limpiar el archivo actual ('{}') (sobrescribir)",
-            archivo.file_name().unwrap_or_default().to_string_lossy()
-        ),
-        "Crear un nuevo archivo con las filas limpias".to_string(),
-        "Solo generar el reporte de duplicados (no limpiar)".to_string(),
-    ];
-    let eleccion =
-        app_shell::menu_seleccionar_nav("¿Qué quieres hacer con la versión limpia?", opciones.clone())?
-            .unwrap_or_else(|| opciones[2].clone());
+    let accion = elegir_accion(
+        "¿Qué quieres hacer con la versión limpia?",
+        [
+            format!(
+                "Limpiar el archivo actual ('{}') (sobrescribir)",
+                archivo.file_name().unwrap_or_default().to_string_lossy()
+            ),
+            "Crear un nuevo archivo con las filas limpias".to_string(),
+            "Solo generar el reporte de duplicados (no limpiar)".to_string(),
+        ],
+    )?;
 
     let ruta_dup = commerce_core::ruta_unica(ruta_salida.join(format!("duplicados_internos_{stem}.xlsx")));
-    let ruta_limpia = if eleccion == opciones[0] {
-        Some(archivo.with_file_name(format!("{stem}__tmp_limpio.xlsx")))
-    } else if eleccion == opciones[1] {
-        Some(commerce_core::ruta_unica(
+    let ruta_limpia = match accion {
+        AccionCruce::SobrescribirBase => Some(archivo.with_file_name(format!("{stem}__tmp_limpio.xlsx"))),
+        AccionCruce::ArchivoNuevo => Some(commerce_core::ruta_unica(
             ruta_salida.join(format!("{stem}_sin_duplicados.xlsx")),
-        ))
-    } else {
-        None
+        )),
+        AccionCruce::SoloReporte => None,
     };
 
     app_shell::info(if ruta_limpia.is_some() {
@@ -330,29 +327,31 @@ fn buscar_duplicados(ruta_salida: &Path) -> AppResult<()> {
         "Reporte de duplicados: '{}' ({n_dup} filas).",
         ruta_dup.file_name().unwrap_or_default().to_string_lossy()
     ));
-    if eleccion == opciones[0] {
-        // Renombrar la ruta REAL (`ruta_limpia_real`), nunca `ruta_limpia`:
-        // si esta última ya existía (un temporal rancio de una corrida
-        // anterior interrumpida), `EscritorXlsx` habría redirigido la
-        // escritura a otra ruta, y renombrar `ruta_limpia` sobre el archivo
-        // original renombraría esa basura vieja, nunca tocada por esta
-        // corrida, destruyendo los datos del usuario.
-        if let Some(rl) = &ruta_limpia_real {
-            renombrar_o_avisar(rl, &archivo)?;
-        }
-        app_shell::success(&format!(
-            "Archivo original sobrescrito: '{}' ({n_limpio} filas).",
-            archivo.file_name().unwrap_or_default().to_string_lossy()
-        ));
-    } else if eleccion == opciones[1] {
-        if let Some(rl) = &ruta_limpia_real {
+    match accion {
+        AccionCruce::SobrescribirBase => {
+            // Se renombra `ruta_limpia_real`, la ruta donde el escritor
+            // escribió de verdad, no la que se le pidió: si esa ya estaba
+            // ocupada, la escritura se redirigió a otra, y renombrar la
+            // pedida movería un archivo ajeno sobre los datos del usuario.
+            if let Some(rl) = &ruta_limpia_real {
+                renombrar_o_avisar(rl, &archivo)?;
+            }
             app_shell::success(&format!(
-                "Nuevo archivo limpio en '{}' ({n_limpio} filas).",
-                rl.file_name().unwrap_or_default().to_string_lossy()
+                "Archivo original sobrescrito: '{}' ({n_limpio} filas).",
+                archivo.file_name().unwrap_or_default().to_string_lossy()
             ));
         }
-    } else {
-        app_shell::info("Solo se generó el reporte de duplicados (no se limpió nada).");
+        AccionCruce::ArchivoNuevo => {
+            if let Some(rl) = &ruta_limpia_real {
+                app_shell::success(&format!(
+                    "Nuevo archivo limpio en '{}' ({n_limpio} filas).",
+                    rl.file_name().unwrap_or_default().to_string_lossy()
+                ));
+            }
+        }
+        AccionCruce::SoloReporte => {
+            app_shell::info("Solo se generó el reporte de duplicados (no se limpió nada).");
+        }
     }
     Ok(())
 }
@@ -431,21 +430,34 @@ fn comparar_duplicados(ruta_salida: &Path) -> AppResult<()> {
     }
 
     let comp_stem = comp.file_stem().unwrap_or_default().to_string_lossy();
+    /// Cuál de los dos archivos del cruce se limpia (o ninguno).
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum ALimpiar {
+        Base,
+        Comparacion,
+        Ninguno,
+    }
     let opciones = vec![
-        format!(
-            "Limpiar archivo Base ('{}')",
-            base.file_name().unwrap_or_default().to_string_lossy()
+        Etiquetada::nueva(
+            ALimpiar::Base,
+            format!(
+                "Limpiar archivo Base ('{}')",
+                base.file_name().unwrap_or_default().to_string_lossy()
+            ),
         ),
-        format!(
-            "Limpiar archivo de Comparación ('{}')",
-            comp.file_name().unwrap_or_default().to_string_lossy()
+        Etiquetada::nueva(
+            ALimpiar::Comparacion,
+            format!(
+                "Limpiar archivo de Comparación ('{}')",
+                comp.file_name().unwrap_or_default().to_string_lossy()
+            ),
         ),
-        "No limpiar ningún archivo".to_string(),
+        Etiquetada::nueva(ALimpiar::Ninguno, "No limpiar ningún archivo"),
     ];
-    let eleccion = app_shell::menu_seleccionar_nav("¿Qué quieres limpiar?", opciones.clone())?
-        .unwrap_or_else(|| opciones[2].clone());
+    let eleccion = app_shell::menu_seleccionar_nav("¿Qué quieres limpiar?", opciones)?
+        .map_or(ALimpiar::Ninguno, |o| o.valor);
 
-    if eleccion == opciones[0] {
+    if eleccion == ALimpiar::Base {
         let ruta_limpia =
             commerce_core::ruta_unica(ruta_salida.join(format!("base_sin_duplicados_{base_stem}.xlsx")));
         let barra = app_shell::barra_progreso("Limpiando", 0);
@@ -465,7 +477,7 @@ fn comparar_duplicados(ruta_salida: &Path) -> AppResult<()> {
             "Guardado: '{}' ({n} filas).",
             ruta_limpia.file_name().unwrap_or_default().to_string_lossy()
         ));
-    } else if eleccion == opciones[1] {
+    } else if eleccion == ALimpiar::Comparacion {
         app_shell::info("Leyendo claves del archivo Base...");
         let claves_base = etl_tools::claves_unicas(&base, &columna_clave, Some(&refs_base), app_shell::warn)?;
         let ruta_limpia = commerce_core::ruta_unica(
@@ -495,14 +507,23 @@ fn comparar_duplicados(ruta_salida: &Path) -> AppResult<()> {
 }
 
 fn gestionar_duplicados(ruta_salida: &Path) -> AppResult<()> {
-    let opciones = vec![
-        "Buscar/quitar duplicados dentro de un archivo".to_string(),
-        "Comparar duplicados entre dos archivos".to_string(),
-    ];
-    match app_shell::menu_seleccionar_nav("Gestión de duplicados:", opciones.clone())? {
-        Some(v) if v == opciones[0] => buscar_duplicados(ruta_salida),
-        Some(v) if v == opciones[1] => comparar_duplicados(ruta_salida),
-        _ => {
+    #[derive(Clone, Copy)]
+    enum Sub {
+        DentroDeUno,
+        EntreDos,
+    }
+    impl std::fmt::Display for Sub {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                Sub::DentroDeUno => write!(f, "Buscar/quitar duplicados dentro de un archivo"),
+                Sub::EntreDos => write!(f, "Comparar duplicados entre dos archivos"),
+            }
+        }
+    }
+    match app_shell::menu_seleccionar_nav("Gestión de duplicados:", vec![Sub::DentroDeUno, Sub::EntreDos])? {
+        Some(Sub::DentroDeUno) => buscar_duplicados(ruta_salida),
+        Some(Sub::EntreDos) => comparar_duplicados(ruta_salida),
+        None => {
             app_shell::warn("Operación cancelada.");
             Ok(())
         }
@@ -672,25 +693,50 @@ fn dividir_por_caracteres(ruta_salida: &Path) -> AppResult<()> {
         return Ok(());
     };
 
-    let opciones = vec![
-        "Añadir columna con el conteo y ordenar todo el archivo".to_string(),
-        "Dividir en 2 hojas por un límite: hasta N / más de N".to_string(),
-        "Reporte aparte: solo las filas que superan un límite".to_string(),
-    ];
-    let Some(accion) =
-        app_shell::menu_seleccionar_nav("¿Qué quieres hacer con el conteo?", opciones.clone())?
+    /// Qué se hace con el conteo de caracteres de la columna elegida.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum AccionConteo {
+        ColumnaYOrdenar,
+        DosHojas,
+        ReporteAparte,
+    }
+    impl std::fmt::Display for AccionConteo {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                AccionConteo::ColumnaYOrdenar => {
+                    write!(f, "Añadir columna con el conteo y ordenar todo el archivo")
+                }
+                AccionConteo::DosHojas => {
+                    write!(f, "Dividir en 2 hojas por un límite: hasta N / más de N")
+                }
+                AccionConteo::ReporteAparte => {
+                    write!(f, "Reporte aparte: solo las filas que superan un límite")
+                }
+            }
+        }
+    }
+
+    let Some(accion) = app_shell::menu_seleccionar_nav(
+        "¿Qué quieres hacer con el conteo?",
+        vec![
+            AccionConteo::ColumnaYOrdenar,
+            AccionConteo::DosHojas,
+            AccionConteo::ReporteAparte,
+        ],
+    )?
     else {
         app_shell::warn("Operación cancelada.");
         return Ok(());
     };
 
-    let limite = if accion != opciones[0] {
-        Some(preguntar_limite_caracteres()?)
-    } else {
+    // Solo el modo que ordena por el conteo no necesita un límite.
+    let limite = if accion == AccionConteo::ColumnaYOrdenar {
         None
+    } else {
+        Some(preguntar_limite_caracteres()?)
     };
 
-    if accion == opciones[0] && columnas.contains(&COL_CARACTERES.to_string()) {
+    if accion == AccionConteo::ColumnaYOrdenar && columnas.contains(&COL_CARACTERES.to_string()) {
         app_shell::error(&format!(
             "El archivo ya tiene una columna '{COL_CARACTERES}'; renómbrala y reintenta."
         ));
@@ -699,7 +745,7 @@ fn dividir_por_caracteres(ruta_salida: &Path) -> AppResult<()> {
 
     let stem = archivo.file_stem().unwrap_or_default().to_string_lossy();
 
-    if accion == opciones[0] {
+    if accion == AccionConteo::ColumnaYOrdenar {
         // Este modo SÍ necesita el archivo completo en memoria: es un orden
         // global por la nueva columna de conteo, no un filtro por fila.
         app_shell::info(&format!(
@@ -757,7 +803,7 @@ fn dividir_por_caracteres(ruta_salida: &Path) -> AppResult<()> {
     let limite = limite.expect("hojas/reporte siempre piden limite");
     let total_filas: u64 = bloques.iter().map(|df| df.height() as u64).sum();
 
-    if accion == opciones[1] {
+    if accion == AccionConteo::DosHojas {
         let ruta = commerce_core::ruta_unica(ruta_salida.join(format!("dividido_{stem}.xlsx")));
         let mut escritor = commerce_core::EscritorXlsx::con_avisador(
             &ruta,
@@ -928,47 +974,98 @@ fn preparar_cruce(prompt_base: &str, prompt_tabla: &str) -> AppResult<Option<Par
     }))
 }
 
-/// Pregunta qué hacer con las coincidencias y devuelve directamente el
-/// ÍNDICE de la opción elegida (0=sobrescribir, 1=nuevo, 2=reporte) dentro de
-/// su propio `opciones`, en vez de devolver el texto para que cada llamador
-/// lo re-derive comparando contra un literal (`starts_with("Limpiar")` vs
-/// `starts_with("Añadir")` según el `sobrescribir_como` de turno): eso
-/// desincroniza en silencio si el texto por defecto cambia en un solo lugar.
-fn preguntar_accion(base: &Path, sobrescribir_como: Option<&str>) -> AppResult<usize> {
+/// Qué hacer con las filas que cruzaron. Viaja como valor entre
+/// `preguntar_accion`, `ruta_cruce` y `cerrar_cruce`, que deben coincidir en
+/// su interpretación: como índice numérico, esas tres lecturas podían
+/// divergir sin que nada lo detectara.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AccionCruce {
+    /// Sobrescribir el archivo base (se escribe a un temporal y se renombra).
+    SobrescribirBase,
+    /// Dejar el resultado en un archivo nuevo.
+    ArchivoNuevo,
+    /// Solo el reporte, con las filas que cruzaron.
+    SoloReporte,
+}
+
+/// Opción de menú que transporta el VALOR elegido y muestra una etiqueta
+/// armada aparte. Es lo que permite que un menú devuelva directamente el
+/// tipo que el llamador necesita, en lugar de un texto que deba
+/// re-interpretarse comparando posiciones.
+///
+/// Se usa cuando la etiqueta depende del contexto (el nombre del archivo en
+/// curso, por ejemplo); si es fija, alcanza con implementar `Display` sobre
+/// el propio tipo y pasarlo directo al menú.
+struct Etiquetada<T> {
+    valor: T,
+    etiqueta: String,
+}
+
+impl<T> Etiquetada<T> {
+    fn nueva(valor: T, etiqueta: impl Into<String>) -> Self {
+        Self {
+            valor,
+            etiqueta: etiqueta.into(),
+        }
+    }
+}
+
+impl<T> std::fmt::Display for Etiquetada<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.etiqueta)
+    }
+}
+
+/// Menú de las tres [`AccionCruce`] con etiquetas a medida del modo que
+/// pregunta. Devuelve la variante por VALOR; cancelar equivale a
+/// `SoloReporte`, la opción que no toca ningún archivo existente.
+fn elegir_accion(mensaje: &str, etiquetas: [String; 3]) -> AppResult<AccionCruce> {
+    let [sobre, nuevo, reporte] = etiquetas;
+    let opciones = vec![
+        Etiquetada::nueva(AccionCruce::SobrescribirBase, sobre),
+        Etiquetada::nueva(AccionCruce::ArchivoNuevo, nuevo),
+        Etiquetada::nueva(AccionCruce::SoloReporte, reporte),
+    ];
+    Ok(app_shell::menu_seleccionar_nav(mensaje, opciones)?.map_or(AccionCruce::SoloReporte, |o| o.valor))
+}
+
+/// Pregunta qué hacer con las coincidencias de un cruce (BUSCARV/Encontrar).
+fn preguntar_accion(base: &Path, sobrescribir_como: Option<&str>) -> AppResult<AccionCruce> {
     let texto_sobre = sobrescribir_como.map(str::to_string).unwrap_or_else(|| {
         format!(
             "Limpiar el archivo base ('{}') (sobrescribir)",
             base.file_name().unwrap_or_default().to_string_lossy()
         )
     });
-    let opciones = vec![
-        texto_sobre,
-        "Crear un archivo nuevo con el resultado".to_string(),
-        "Solo generar el reporte de coincidencias (solo las que cruzaron)".to_string(),
-    ];
-    let eleccion =
-        app_shell::menu_seleccionar_nav("¿Qué quieres hacer con las coincidencias?", opciones.clone())?
-            .unwrap_or_else(|| opciones[2].clone());
-    Ok(opciones.iter().position(|o| *o == eleccion).unwrap_or(2))
+    elegir_accion(
+        "¿Qué quieres hacer con las coincidencias?",
+        [
+            texto_sobre,
+            "Crear un archivo nuevo con el resultado".to_string(),
+            "Solo generar el reporte de coincidencias (solo las que cruzaron)".to_string(),
+        ],
+    )
 }
 
-/// Ruta de salida para BUSCARV según `indice_accion` (0=sobrescribir vía
-/// temporal, 1=archivo nuevo, 2+=solo reporte). `prefijo` distingue exacto
-/// ("") de parcial ("parcial_") en el nombre — antes el caso 0 (temporal) no
-/// lo incorporaba como sí hacían los otros dos, así que BUSCARV exacto y
-/// parcial corriendo sobre la MISMA base podían pisarse el mismo archivo
-/// temporal (`{stem}__tmp_buscarv.xlsx` en ambos casos).
-fn ruta_cruce(indice_accion: usize, base: &Path, ruta_salida: &Path, prefijo: &str) -> PathBuf {
+/// Ruta de salida para BUSCARV según la acción elegida. `prefijo` distingue
+/// exacto ("") de parcial ("parcial_") en el nombre, incluido el temporal de
+/// `SobrescribirBase`: sin él, BUSCARV exacto y parcial sobre la MISMA base
+/// se pisarían el mismo archivo temporal.
+fn ruta_cruce(accion: AccionCruce, base: &Path, ruta_salida: &Path, prefijo: &str) -> PathBuf {
     let stem = base.file_stem().unwrap_or_default().to_string_lossy();
-    match indice_accion {
-        0 => base.with_file_name(format!("{stem}__tmp_{prefijo}buscarv.xlsx")),
-        1 => commerce_core::ruta_unica(ruta_salida.join(format!("buscarv_{prefijo}{stem}.xlsx"))),
-        _ => commerce_core::ruta_unica(ruta_salida.join(format!("coincidencias_{prefijo}{stem}.xlsx"))),
+    match accion {
+        AccionCruce::SobrescribirBase => base.with_file_name(format!("{stem}__tmp_{prefijo}buscarv.xlsx")),
+        AccionCruce::ArchivoNuevo => {
+            commerce_core::ruta_unica(ruta_salida.join(format!("buscarv_{prefijo}{stem}.xlsx")))
+        }
+        AccionCruce::SoloReporte => {
+            commerce_core::ruta_unica(ruta_salida.join(format!("coincidencias_{prefijo}{stem}.xlsx")))
+        }
     }
 }
 
 fn cerrar_cruce(
-    indice_accion: usize,
+    accion: AccionCruce,
     ruta: &commerce_core::RutaEscritaReal,
     base: &Path,
     total_escrito: u64,
@@ -977,19 +1074,19 @@ fn cerrar_cruce(
 ) -> AppResult<()> {
     let sin_match = filas_total.saturating_sub(filas_match);
     let resumen = format!("Con coincidencia: {filas_match} · sin coincidencia: {sin_match}.");
-    match indice_accion {
-        0 => {
+    match accion {
+        AccionCruce::SobrescribirBase => {
             renombrar_o_avisar(ruta, base)?;
             app_shell::success(&format!(
                 "Archivo base sobrescrito: '{}' ({total_escrito} filas). {resumen}",
                 base.file_name().unwrap_or_default().to_string_lossy()
             ));
         }
-        1 => app_shell::success(&format!(
+        AccionCruce::ArchivoNuevo => app_shell::success(&format!(
             "Guardado: '{}' ({total_escrito} filas). {resumen}",
             ruta.file_name().unwrap_or_default().to_string_lossy()
         )),
-        _ => app_shell::success(&format!(
+        AccionCruce::SoloReporte => app_shell::success(&format!(
             "Reporte de coincidencias: '{}' ({total_escrito} filas que cruzaron). {resumen}",
             ruta.file_name().unwrap_or_default().to_string_lossy()
         )),
@@ -1000,15 +1097,14 @@ fn cerrar_cruce(
 /// Núcleo compartido de BUSCARV parcial y Encontrar: cruza `archivo` contra
 /// el autómata Aho-Corasick por lotes acotados (`FILAS_MIN_LOTE_PARCIAL`/
 /// `CELDAS_POR_LOTE_PARCIAL`), escribe el resultado y limpia la salida a
-/// medias si algo falla. Antes vivía duplicado (~70 líneas casi idénticas)
-/// entre `buscarv_parcial_modo` y `encontrar_modo`; lo único que cambia
-/// entre los dos modos son estos parámetros. Devuelve `(filas_escritas,
-/// filas_con_match, ruta_real)` para que el llamador arme su propio
-/// `cerrar_cruce` — `ruta_real` es la ruta EFECTIVA usada por `EscritorXlsx`
-/// (puede diferir de `ruta` si la redirigió por una colisión, p. ej. un
-/// temporal rancio de una corrida anterior interrumpida); usar `ruta` en vez
-/// de `ruta_real` para sobrescribir el archivo base es lo que causaba que se
-/// renombrara basura vieja sobre los datos del usuario.
+/// medias si algo falla. Lo único que difiere entre ambos modos son estos
+/// parámetros.
+///
+/// Devuelve `(filas_escritas, filas_con_match, ruta_real)` para que el
+/// llamador arme su propio `cerrar_cruce`. `ruta_real` es la ruta EFECTIVA
+/// usada por `EscritorXlsx`, que puede diferir de `ruta` si la redirigió por
+/// una colisión: sobrescribir el archivo base con `ruta` movería un archivo
+/// que esta llamada nunca escribió.
 #[allow(clippy::too_many_arguments)]
 fn cruzar_y_escribir(
     archivo: &Path,
@@ -1108,18 +1204,16 @@ fn buscarv_modo(ruta_salida: &Path) -> AppResult<()> {
         return Ok(());
     };
 
-    let opciones_multi = vec![
-        "Solo la primera (como Excel BUSCARV)".to_string(),
-        "Unir todas con salto de línea".to_string(),
-    ];
     let unir_multiples = app_shell::menu_seleccionar(
         "Si una clave tiene VARIAS coincidencias en la Tabla:",
-        opciones_multi.clone(),
+        vec![
+            Etiquetada::nueva(false, "Solo la primera (como Excel BUSCARV)"),
+            Etiquetada::nueva(true, "Unir todas con salto de línea"),
+        ],
     )?
-    .as_deref()
-        == Some(opciones_multi[1].as_str());
+    .is_some_and(|o| o.valor);
 
-    let indice_accion = preguntar_accion(&prep.base, None)?;
+    let accion = preguntar_accion(&prep.base, None)?;
 
     let (salida_traer, renombrar) = etl_tools::renombrar_traidas(&prep.cols_base, &prep.columnas_traer);
 
@@ -1147,8 +1241,8 @@ fn buscarv_modo(ruta_salida: &Path) -> AppResult<()> {
     let alto = lookup.height();
     lookup.with_column(Column::new("_hit".into(), vec![true; alto]))?;
 
-    let solo_match = indice_accion == 2;
-    let ruta = ruta_cruce(indice_accion, &prep.base, ruta_salida, "");
+    let solo_match = accion == AccionCruce::SoloReporte;
+    let ruta = ruta_cruce(accion, &prep.base, ruta_salida, "");
     let refs_base = excluir_refs(&prep.excluir_base);
     let total = total_filas(
         std::slice::from_ref(&prep.base),
@@ -1181,7 +1275,7 @@ fn buscarv_modo(ruta_salida: &Path) -> AppResult<()> {
     let (total_escrito, filas_match, filas_total, ruta_real) = resultado?;
 
     cerrar_cruce(
-        indice_accion,
+        accion,
         &ruta_real,
         &prep.base,
         total_escrito as u64,
@@ -1207,38 +1301,37 @@ fn buscarv_parcial_modo(ruta_salida: &Path) -> AppResult<()> {
         return Ok(());
     };
 
-    let opciones_opcion = vec![
-        "Traer la más larga (más específica)".to_string(),
-        "Traer la primera (orden de la Tabla)".to_string(),
-        "Traer todas, unidas con salto de línea".to_string(),
-    ];
-    let Some(opcion_texto) = app_shell::menu_seleccionar_nav(
+    let Some(opcion) = app_shell::menu_seleccionar_nav(
         "Si VARIAS claves de la Tabla aparecen en el mismo texto de la Base:",
-        opciones_opcion.clone(),
+        vec![
+            Etiquetada::nueva(
+                etl_tools::OpcionMultiple::Larga,
+                "Traer la más larga (más específica)",
+            ),
+            Etiquetada::nueva(
+                etl_tools::OpcionMultiple::Primera,
+                "Traer la primera (orden de la Tabla)",
+            ),
+            Etiquetada::nueva(
+                etl_tools::OpcionMultiple::Todas,
+                "Traer todas, unidas con salto de línea",
+            ),
+        ],
     )?
-    else {
+    .map(|o| o.valor) else {
         return Ok(());
     };
-    let opcion = if opcion_texto == opciones_opcion[0] {
-        etl_tools::OpcionMultiple::Larga
-    } else if opcion_texto == opciones_opcion[1] {
-        etl_tools::OpcionMultiple::Primera
-    } else {
-        etl_tools::OpcionMultiple::Todas
-    };
 
-    let opciones_multi = vec![
-        "Solo la primera".to_string(),
-        "Unir sus valores con salto de línea".to_string(),
-    ];
     let unir_multiples = app_shell::menu_seleccionar(
         "Si una MISMA clave está repetida en la Tabla (varias filas):",
-        opciones_multi.clone(),
+        vec![
+            Etiquetada::nueva(false, "Solo la primera"),
+            Etiquetada::nueva(true, "Unir sus valores con salto de línea"),
+        ],
     )?
-    .as_deref()
-        == Some(opciones_multi[1].as_str());
+    .is_some_and(|o| o.valor);
 
-    let indice_accion = preguntar_accion(&prep.base, None)?;
+    let accion = preguntar_accion(&prep.base, None)?;
     let (salida_traer, renombrar) = etl_tools::renombrar_traidas(&prep.cols_base, &prep.columnas_traer);
 
     app_shell::info("Cargando la tabla y construyendo el buscador (Aho-Corasick)...");
@@ -1264,8 +1357,8 @@ fn buscarv_parcial_modo(ruta_salida: &Path) -> AppResult<()> {
     let (ac, claves_originales) = etl_tools::construir_automata(&lookup)?;
     app_shell::info(&format!("Tabla: {} claves distintas.", lookup.height()));
 
-    let solo_match = indice_accion == 2;
-    let ruta = ruta_cruce(indice_accion, &prep.base, ruta_salida, "parcial_");
+    let solo_match = accion == AccionCruce::SoloReporte;
+    let ruta = ruta_cruce(accion, &prep.base, ruta_salida, "parcial_");
     let refs_base = excluir_refs(&prep.excluir_base);
     let total = total_filas(
         std::slice::from_ref(&prep.base),
@@ -1299,14 +1392,7 @@ fn buscarv_parcial_modo(ruta_salida: &Path) -> AppResult<()> {
         ),
     )?;
 
-    cerrar_cruce(
-        indice_accion,
-        &ruta_real,
-        &prep.base,
-        escritor_total,
-        filas_match,
-        total,
-    )
+    cerrar_cruce(accion, &ruta_real, &prep.base, escritor_total, filas_match, total)
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -1314,17 +1400,31 @@ fn buscarv_parcial_modo(ruta_salida: &Path) -> AppResult<()> {
 // ════════════════════════════════════════════════════════════════════════
 
 fn pedir_palabras_encontrar() -> AppResult<Option<Vec<String>>> {
-    let opciones = vec![
-        "Escribirlas aquí (separadas por coma)".to_string(),
-        "Un XLSX con las palabras en su PRIMERA columna".to_string(),
-    ];
-    let Some(fuente) =
-        app_shell::menu_seleccionar_nav("¿De dónde vienen las palabras a buscar?", opciones.clone())?
+    /// De dónde salen las palabras a buscar.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum FuentePalabras {
+        Escritas,
+        DesdeXlsx,
+    }
+    impl std::fmt::Display for FuentePalabras {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                FuentePalabras::Escritas => write!(f, "Escribirlas aquí (separadas por coma)"),
+                FuentePalabras::DesdeXlsx => {
+                    write!(f, "Un XLSX con las palabras en su PRIMERA columna")
+                }
+            }
+        }
+    }
+    let Some(fuente) = app_shell::menu_seleccionar_nav(
+        "¿De dónde vienen las palabras a buscar?",
+        vec![FuentePalabras::Escritas, FuentePalabras::DesdeXlsx],
+    )?
     else {
         return Ok(None);
     };
 
-    if fuente == opciones[0] {
+    if fuente == FuentePalabras::Escritas {
         let texto =
             app_shell::pedir_texto("Palabras a buscar (separadas por coma, ej: 'honda,depo,faro led'):")?
                 .unwrap_or_default();
@@ -1342,19 +1442,17 @@ fn pedir_palabras_encontrar() -> AppResult<Option<Vec<String>>> {
     let Some(excluir) = preguntar_hojas_excluir_de(&archivo, "las palabras")? else {
         return Ok(None);
     };
-    let opciones_fila = vec![
-        "Es una cabecera/título (ignorarla)".to_string(),
-        "Ya es una palabra (incluirla en la búsqueda)".to_string(),
-    ];
     let primera_es_palabra = app_shell::menu_seleccionar(
         &format!(
             "En '{}', ¿la PRIMERA fila es una cabecera o ya es una palabra?",
             archivo.file_name().unwrap_or_default().to_string_lossy()
         ),
-        opciones_fila.clone(),
+        vec![
+            Etiquetada::nueva(false, "Es una cabecera/título (ignorarla)"),
+            Etiquetada::nueva(true, "Ya es una palabra (incluirla en la búsqueda)"),
+        ],
     )?
-    .as_deref()
-        == Some(opciones_fila[1].as_str());
+    .is_some_and(|o| o.valor);
 
     Ok(Some(etl_tools::palabras_de_xlsx(
         &archivo,
@@ -1409,25 +1507,25 @@ fn encontrar_modo(ruta_salida: &Path) -> AppResult<()> {
     else {
         return Ok(());
     };
-    let opciones_opcion = vec![
-        "Solo la primera (el orden de tu lista marca la prioridad)".to_string(),
-        "Todas, unidas con salto de línea".to_string(),
-    ];
-    let Some(opcion_texto) = app_shell::menu_seleccionar_nav(
+    let Some(opcion) = app_shell::menu_seleccionar_nav(
         "Si VARIAS palabras coinciden en la misma celda:",
-        opciones_opcion.clone(),
+        vec![
+            Etiquetada::nueva(
+                etl_tools::OpcionMultiple::Primera,
+                "Solo la primera (el orden de tu lista marca la prioridad)",
+            ),
+            Etiquetada::nueva(
+                etl_tools::OpcionMultiple::Todas,
+                "Todas, unidas con salto de línea",
+            ),
+        ],
     )?
-    else {
+    .map(|o| o.valor) else {
         return Ok(());
-    };
-    let opcion = if opcion_texto == opciones_opcion[0] {
-        etl_tools::OpcionMultiple::Primera
-    } else {
-        etl_tools::OpcionMultiple::Todas
     };
 
     let stem = base.file_stem().unwrap_or_default().to_string_lossy();
-    let indice_accion = preguntar_accion(
+    let accion = preguntar_accion(
         &base,
         Some(&format!(
             "Añadir la columna al archivo base ('{}') (sobrescribir)",
@@ -1444,11 +1542,15 @@ fn encontrar_modo(ruta_salida: &Path) -> AppResult<()> {
     let columnas_salida: Vec<String> = std::iter::once(COL_ENCONTRADA.to_string())
         .chain(cols_base.iter().cloned())
         .collect();
-    let solo_match = indice_accion == 2;
-    let ruta = match indice_accion {
-        0 => base.with_file_name(format!("{stem}__tmp_encontrar.xlsx")),
-        1 => commerce_core::ruta_unica(ruta_salida.join(format!("encontrar_{stem}.xlsx"))),
-        _ => commerce_core::ruta_unica(ruta_salida.join(format!("encontradas_{stem}.xlsx"))),
+    let solo_match = accion == AccionCruce::SoloReporte;
+    let ruta = match accion {
+        AccionCruce::SobrescribirBase => base.with_file_name(format!("{stem}__tmp_encontrar.xlsx")),
+        AccionCruce::ArchivoNuevo => {
+            commerce_core::ruta_unica(ruta_salida.join(format!("encontrar_{stem}.xlsx")))
+        }
+        AccionCruce::SoloReporte => {
+            commerce_core::ruta_unica(ruta_salida.join(format!("encontradas_{stem}.xlsx")))
+        }
     };
 
     let total = total_filas(std::slice::from_ref(&base), Some(&refs_base), app_shell::warn).unwrap_or(0);
@@ -1474,35 +1576,63 @@ fn encontrar_modo(ruta_salida: &Path) -> AppResult<()> {
         ),
     )?;
 
-    cerrar_cruce(
-        indice_accion,
-        &ruta_real,
-        &base,
-        escritor_total,
-        filas_match,
-        total,
-    )
+    cerrar_cruce(accion, &ruta_real, &base, escritor_total, filas_match, total)
 }
 
 // ════════════════════════════════════════════════════════════════════════
 // main()
 // ════════════════════════════════════════════════════════════════════════
 
+/// Los modos del menú principal. El menú los ofrece POR VALOR (vía
+/// `menu_seleccionar_nav<Modo>`) y `ejecutar` los resuelve con un `match`
+/// exhaustivo: agregar o quitar una variante no compila hasta contemplarla
+/// en el despacho. Con una lista de etiquetas y comparación posicional
+/// (`modo == opciones[N]`), en cambio, reordenar el menú desviaba
+/// silenciosamente cada rama posterior sin que el compilador lo notara.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Modo {
+    BorrarPorPalabra,
+    Duplicados,
+    OrdenarColumnas,
+    ContarCaracteres,
+    Buscarv,
+    BuscarvParcial,
+    Encontrar,
+}
+
+impl Modo {
+    const TODOS: [Modo; 7] = [
+        Modo::BorrarPorPalabra,
+        Modo::Duplicados,
+        Modo::OrdenarColumnas,
+        Modo::ContarCaracteres,
+        Modo::Buscarv,
+        Modo::BuscarvParcial,
+        Modo::Encontrar,
+    ];
+}
+
+impl std::fmt::Display for Modo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let etiqueta = match self {
+            Modo::BorrarPorPalabra => "Borrar por palabra clave",
+            Modo::Duplicados => "Gestionar duplicados (por columna clave)",
+            Modo::OrdenarColumnas => "Ordenar columnas (A→Z / 0→9, estilo Excel)",
+            Modo::ContarCaracteres => "Contar caracteres de una columna (columna, hojas o reporte)",
+            Modo::Buscarv => "BUSCARV — traer columnas de otro archivo (VLOOKUP)",
+            Modo::BuscarvParcial => "BUSCARV parcial — cruce por coincidencia parcial (palabra completa)",
+            Modo::Encontrar => "Encontrar — marcar filas que contienen palabras (terminal o XLSX)",
+        };
+        write!(f, "{etiqueta}")
+    }
+}
+
 fn ejecutar() -> AppResult<()> {
     app_shell::mostrar_cabecera("ETL TOOLS — BUSCARV, duplicados, colores, Encontrar");
     let ruta_salida = app_shell::ruta_salida();
 
     loop {
-        let opciones = vec![
-            "Borrar por palabra clave".to_string(),
-            "Gestionar duplicados (por columna clave)".to_string(),
-            "Ordenar columnas (A→Z / 0→9, estilo Excel)".to_string(),
-            "Contar caracteres de una columna (columna, hojas o reporte)".to_string(),
-            "BUSCARV — traer columnas de otro archivo (VLOOKUP)".to_string(),
-            "BUSCARV parcial — cruce por coincidencia parcial (palabra completa)".to_string(),
-            "Encontrar — marcar filas que contienen palabras (terminal o XLSX)".to_string(),
-        ];
-        let modo = match app_shell::menu_seleccionar_nav("¿Qué quieres hacer?", opciones.clone()) {
+        let modo = match app_shell::menu_seleccionar_nav("¿Qué quieres hacer?", Modo::TODOS.to_vec()) {
             Ok(Some(m)) => m,
             Ok(None) => {
                 app_shell::info("Hasta luego.");
@@ -1512,27 +1642,21 @@ fn ejecutar() -> AppResult<()> {
             Err(e) => return Err(e.into()),
         };
 
-        let resultado = if modo == opciones[0] {
-            match seleccionar_archivo("Selecciona el archivo a procesar:") {
+        let resultado = match modo {
+            Modo::BorrarPorPalabra => match seleccionar_archivo("Selecciona el archivo a procesar:") {
                 Ok(Some(archivo)) => procesar_por_palabra(&archivo, &ruta_salida),
                 Ok(None) => {
                     app_shell::warn("No se seleccionó archivo. Volviendo al menú.");
                     Ok(())
                 }
                 Err(e) => Err(e),
-            }
-        } else if modo == opciones[1] {
-            gestionar_duplicados(&ruta_salida)
-        } else if modo == opciones[2] {
-            ordenar_columna(&ruta_salida)
-        } else if modo == opciones[3] {
-            dividir_por_caracteres(&ruta_salida)
-        } else if modo == opciones[4] {
-            buscarv_modo(&ruta_salida)
-        } else if modo == opciones[5] {
-            buscarv_parcial_modo(&ruta_salida)
-        } else {
-            encontrar_modo(&ruta_salida)
+            },
+            Modo::Duplicados => gestionar_duplicados(&ruta_salida),
+            Modo::OrdenarColumnas => ordenar_columna(&ruta_salida),
+            Modo::ContarCaracteres => dividir_por_caracteres(&ruta_salida),
+            Modo::Buscarv => buscarv_modo(&ruta_salida),
+            Modo::BuscarvParcial => buscarv_parcial_modo(&ruta_salida),
+            Modo::Encontrar => encontrar_modo(&ruta_salida),
         };
 
         if let Err(e) = resultado {
@@ -1569,14 +1693,13 @@ mod tests {
 
     #[test]
     fn ruta_cruce_temporal_distingue_exacto_de_parcial_sobre_la_misma_base() {
-        // Antes: el caso 0 (sobrescribir vía temporal) ignoraba `prefijo` —
-        // BUSCARV exacto ("") y parcial ("parcial_") corriendo sobre la
-        // MISMA base producían el mismo nombre de temporal
-        // (`{stem}__tmp_buscarv.xlsx`), con riesgo real de pisarse entre sí.
+        // BUSCARV exacto y parcial pueden correr sobre la MISMA base: si el
+        // temporal de `SobrescribirBase` ignorara el prefijo, ambos
+        // escribirían en el mismo archivo y se pisarían entre sí.
         let base = Path::new("carpeta/datos.xlsx");
         let salida = Path::new("salida");
-        let exacto = ruta_cruce(0, base, salida, "");
-        let parcial = ruta_cruce(0, base, salida, "parcial_");
+        let exacto = ruta_cruce(AccionCruce::SobrescribirBase, base, salida, "");
+        let parcial = ruta_cruce(AccionCruce::SobrescribirBase, base, salida, "parcial_");
         assert_ne!(
             exacto, parcial,
             "exacto y parcial no deben compartir el mismo temporal"

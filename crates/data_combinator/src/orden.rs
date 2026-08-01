@@ -111,11 +111,9 @@ mod tests {
 
     #[test]
     fn clave_excel_eq_consistente_con_ord_sin_importar_ascendente() {
-        // Antes: `PartialEq` derivada comparaba también `ascendente`, pero
-        // `cmp` lo ignora para decidir igualdad (solo invierte el resultado
-        // ya calculado) — dos claves iguales en todo menos `ascendente` daban
-        // `cmp() == Equal` y `derived_eq() == false` a la vez, violando el
-        // contrato Eq/Ord.
+        // `cmp` ignora `ascendente` para decidir igualdad (solo invierte el
+        // resultado ya calculado), así que `eq` tampoco puede compararlo: con
+        // la `PartialEq` derivada se violaría el contrato Eq/Ord.
         let asc = ClaveExcel::nueva("Honda", true);
         let desc = ClaveExcel::nueva("Honda", false);
         assert_eq!(asc.cmp(&desc), std::cmp::Ordering::Equal);

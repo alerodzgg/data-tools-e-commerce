@@ -57,6 +57,9 @@ pub(crate) fn activo() -> bool {
 }
 
 fn siguiente(nombre_prompt: &str) -> Respuesta {
+    // Solo se llama con un guion activo (lo garantiza `activo()` en cada
+    // punto de entrada): sin él es un error de programación del propio test.
+    #[allow(clippy::expect_used)]
     let tomada = GUION.with(|g| {
         g.borrow_mut()
             .as_mut()

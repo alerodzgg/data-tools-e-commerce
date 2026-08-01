@@ -27,7 +27,7 @@ pub fn iter_hojas_valores(
                 .with_infer_schema_length(Some(0))
                 .with_ignore_errors(true)
                 .finish()
-                .and_then(|lf| lf.collect())
+                .and_then(polars::prelude::LazyFrame::collect)
             {
                 Ok(df) if df.height() > 0 => salida.push(df),
                 Ok(_) => {}

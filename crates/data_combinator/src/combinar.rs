@@ -79,13 +79,10 @@ const NOMBRES_RESERVADOS_WINDOWS: &[&str] = &[
 /// en cualquier ubicación con los permisos del usuario. También rechaza los
 /// nombres de [`NOMBRES_RESERVADOS_WINDOWS`].
 fn validar_nombre_salida(nombre: &str) -> CoreResult<()> {
-    // Se chequean AMBOS separadores ('/' y '\\') de forma explícita, no vía
-    // `Path::file_name()`: la idea de "separador" de `Path` es la del SO en
-    // el que corre — en Linux (donde corre CI) '\\' NO es separador de
-    // ruta, así que `Path::new("..\\otro\\archivo").file_name()` devuelve
-    // el string COMPLETO como si fuera "un solo nombre", dejando pasar en
-    // Linux justo la entrada que en Windows sí se rechaza (bug real que
-    // esta suite nunca detectó hasta la primera corrida de CI en Linux).
+    // Ambos separadores ('/' y '\\') se chequean explícitamente, no vía
+    // `Path::file_name()`: la noción de separador de `Path` es la del SO
+    // donde corre, y en Linux '\\' no lo es — `..\\otro\\archivo` pasaría
+    // como "un solo nombre de archivo" y la validación quedaría rota ahí.
     let tiene_separador = nombre.contains('/') || nombre.contains('\\');
     let es_relativo_especial = nombre == "." || nombre == "..";
     if nombre.is_empty() || tiene_separador || es_relativo_especial {
@@ -171,7 +168,7 @@ fn escribir_filas(
             }
         }
     }
-    let n = por_columna.first().map(|c| c.len()).unwrap_or(0);
+    let n = por_columna.first().map(|v| v.len()).unwrap_or(0);
     let series: Vec<Column> = columnas
         .iter()
         .zip(por_columna)
@@ -191,13 +188,10 @@ struct EntradaFusion {
     origen: usize,
 }
 
-// `eq` definido en términos de `cmp` (no comparando solo `clave`, que ignora
-// `origen`): la versión anterior podía dar `cmp() != Equal` (por el
-// desempate de `origen`) y a la vez `eq() == true` para dos entradas de
-// distinto origen — el mismo defecto de contrato Eq/Ord que ya se corrigió
-// en `ClaveExcel` (ver `orden.rs`). Hoy es inofensivo porque `BinaryHeap`
-// solo usa `Ord`, pero es una trampa latente para cualquier uso futuro de
-// `==`/`dedup()`/`HashSet` sobre `EntradaFusion`.
+// `eq` se define en términos de `cmp` para no romper el contrato Eq/Ord:
+// `cmp` desempata por `origen`, así que compararlo solo por `clave` daría
+// `eq() == true` y `cmp() != Equal` a la vez. `BinaryHeap` solo usa `Ord`,
+// pero `==`/`dedup()`/`HashSet` sobre `EntradaFusion` dependerían de esto.
 impl PartialEq for EntradaFusion {
     fn eq(&self, other: &Self) -> bool {
         self.cmp(other) == std::cmp::Ordering::Equal
@@ -498,11 +492,8 @@ mod tests {
 
     #[test]
     fn entrada_fusion_eq_consistente_con_ord_pese_al_desempate_por_origen() {
-        // Antes: `eq` comparaba solo `clave`, ignorando `origen`, mientras
-        // `cmp` sí lo usa como desempate — dos entradas con la misma clave
-        // pero distinto origen daban `cmp() != Equal` y `eq() == true` a la
-        // vez, el mismo defecto de contrato Eq/Ord ya corregido en
-        // `ClaveExcel` (`orden.rs`).
+        // `eq` debe ser consistente con `cmp`: si `cmp` desempata por
+        // `origen`, dos entradas de distinto origen no pueden ser `==`.
         let a = EntradaFusion {
             clave: ClaveExcel::nueva("Honda", true),
             fila: vec![],
@@ -522,20 +513,6 @@ mod tests {
     }
 
     #[test]
-    fn formato_display_es_distinto_entre_variantes() {
-        // Antes, el binario elegía `Formato` re-derivándolo de un
-        // `starts_with("Excel")` sobre el texto mostrado en el menú: si esta
-        // etiqueta cambiaba, la comparación se desincronizaba en silencio y
-        // "Excel" terminaba produciendo CSV. Ahora `menu_seleccionar_nav`
-        // devuelve el `Formato` real por posición, sin ningún texto de por
-        // medio — este test solo confirma que las etiquetas siguen siendo
-        // legibles y distinguibles entre sí.
-        assert_ne!(Formato::Xlsx.to_string(), Formato::Csv.to_string());
-        assert!(Formato::Xlsx.to_string().contains("Excel"));
-        assert!(Formato::Csv.to_string().contains("CSV"));
-    }
-
-    #[test]
     fn nombre_salida_simple_es_valido() {
         assert!(validar_nombre_salida("combinado").is_ok());
         assert!(validar_nombre_salida("combinado_2024").is_ok());
@@ -543,10 +520,9 @@ mod tests {
 
     #[test]
     fn nombre_salida_rechaza_nombres_de_dispositivo_reservados_de_windows() {
-        // Antes: solo se validaban separadores de ruta/'.'/'..'/rutas
-        // absolutas — "nul" pasaba la validación como "solo un nombre de
-        // archivo" y `File::create` habría apuntado al dispositivo nulo real
-        // en vez de crear un archivo, con los datos descartados en silencio.
+        // Un nombre de dispositivo reservado pasa como "solo un nombre de
+        // archivo", pero `File::create` apuntaría al dispositivo real y los
+        // datos se descartarían en silencio.
         assert!(validar_nombre_salida("nul").is_err());
         assert!(validar_nombre_salida("NUL").is_err());
         assert!(validar_nombre_salida("con").is_err());

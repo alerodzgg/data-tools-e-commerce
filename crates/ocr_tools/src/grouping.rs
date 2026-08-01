@@ -232,11 +232,10 @@ mod tests {
 
     #[test]
     fn coordenada_nan_no_entra_en_panico_al_ordenar() {
-        // Antes: `.partial_cmp(...).unwrap()` entraba en pánico si una caja
-        // traía NaN (geometría derivada de detecciones sobre imágenes de
-        // terceros, no confiables). Dos cajas en la misma línea horizontal
-        // ejercitan el `sort_by` de `y_center` y, al fusionarse, el de
-        // `x_min` también.
+        // Una caja con NaN (geometría derivada de detecciones sobre imágenes
+        // no confiables) no debe hacer panickear el orden. Dos cajas en la
+        // misma línea ejercitan el `sort_by` de `y_center` y, al fusionarse,
+        // el de `x_min`.
         let polys = vec![caja(f32::NAN, 10.0, 40.0, 30.0), caja(45.0, 10.0, 90.0, 30.0)];
         let (_horiz, _free) = group_text_box(&polys, 0.1, 0.5, 0.5, 0.5, 0.1, true);
     }

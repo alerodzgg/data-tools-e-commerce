@@ -19,10 +19,9 @@ const ONNXRUNTIME_LIB: &str = "onnxruntime.dll";
 const ONNXRUNTIME_LIB: &str = "libonnxruntime.so";
 
 /// Nombre de la (única) salida esperada de ambos modelos, fijado por
-/// convención en cómo se exportaron a ONNX. Antes se indexaba directo
-/// (`outputs["output"]`), que entra en pánico si un modelo con otro nombre
-/// de salida (p. ej. de otra versión/exportación, o `assets_dir()` apuntando
-/// a un modelo incorrecto) llega a `Detector`/`Recognizer`.
+/// convención en cómo se exportaron a ONNX. Se busca en vez de indexar: un
+/// modelo con otro nombre de salida (otra versión, o `assets_dir()` mal
+/// resuelto) debe dar error, no panic.
 fn salida_output<'a>(outputs: &'a SessionOutputs<'_>) -> ort::Result<&'a DynValue> {
     outputs.get("output").ok_or_else(|| {
         ort::Error::new(
@@ -152,7 +151,7 @@ impl Recognizer {
 
 fn softmax_last_axis(mut logits: Array2<f32>) -> Array2<f32> {
     for mut row in logits.axis_iter_mut(ndarray::Axis(0)) {
-        let max = row.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        let max = row.iter().copied().fold(f32::NEG_INFINITY, f32::max);
         let mut sum = 0.0f32;
         for v in row.iter_mut() {
             *v = (*v - max).exp();

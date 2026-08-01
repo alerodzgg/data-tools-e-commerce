@@ -63,7 +63,7 @@ fn columnas(nombres: &[&str]) -> Vec<String> {
     nombres.iter().map(|s| s.to_string()).collect()
 }
 
-// ------------------------------------------------- el bug mínimo reproducible
+// ------------------------------------------------------ caso mínimo de orden
 #[test]
 fn orden_igual_en_memoria_y_en_disco() {
     let tmp = tempfile::tempdir().unwrap();
@@ -401,7 +401,7 @@ fn error_en_columna_de_orden_no_deja_archivo_de_salida_a_medias() {
 
     let quedaron: Vec<String> = std::fs::read_dir(tmp.path())
         .unwrap()
-        .filter_map(|e| e.ok())
+        .filter_map(|r| r.ok())
         .map(|e| e.file_name().to_string_lossy().into_owned())
         .filter(|n| n != "e1.csv")
         .collect();

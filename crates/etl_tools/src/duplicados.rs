@@ -217,9 +217,9 @@ pub fn escribir_reporte_y_limpio(
     match resultado {
         Ok((n_dup, n_limpio)) => Ok((n_dup, n_limpio, ruta_limpia_real)),
         Err(error) => {
-            // El llamador ya no puede adivinar bien qué archivo(s) limpiar
-            // (ver la nota de `ruta_limpia_real` arriba): se aborta acá,
-            // contra la ruta REAL de cada escritor.
+            // Se aborta acá, contra la ruta REAL de cada escritor: el
+            // llamador no puede saber cuál usó cada uno (ver
+            // `ruta_limpia_real` arriba).
             let _ = escritor_dup.abortar();
             if let Some(e) = escritor_limpio.as_mut() {
                 let _ = e.abortar();
@@ -249,14 +249,10 @@ mod tests {
 
     #[test]
     fn clave_limpia_de_transcribe_tildes_pero_conserva_la_ene() {
-        // Antes: `is_ascii_alphanumeric` BORRABA toda letra acentuada y la
-        // `ñ`, así que "Piña" y "Pia" colapsaban a la misma clave "pia" (falso
-        // duplicado) Y "Camión"/"Camion" (misma palabra, con/sin tilde —
-        // típico entre archivos de distintas fuentes) daban claves distintas
-        // (falso "sin coincidencia"). Ahora las vocales acentuadas se
-        // transliteran (arregla el segundo caso) pero la `ñ` se conserva tal
-        // cual, porque no es una vocal con acento sino una letra distinta
-        // ("año" != "ano").
+        // Las vocales acentuadas se transliteran para que "Camión" y
+        // "Camion" (misma palabra entre archivos de distintas fuentes) den la
+        // misma clave. La `ñ` se conserva: no es una vocal acentuada sino una
+        // letra distinta, y colapsarla haría de "año" y "ano" un duplicado.
         assert_eq!(clave_limpia_de(Some("Camión")), clave_limpia_de(Some("Camion")));
         assert_ne!(clave_limpia_de(Some("Piña")), clave_limpia_de(Some("Pia")));
         assert_ne!(clave_limpia_de(Some("año")), clave_limpia_de(Some("ano")));
@@ -264,11 +260,9 @@ mod tests {
 
     #[test]
     fn claves_repetidas_avisa_si_el_archivo_no_se_pudo_leer() -> CoreResult<()> {
-        // Antes: `claves_repetidas` (como las otras 7 funciones motor
-        // hermanas) no exponía `avisar` y pasaba `|_| {}` a
-        // `iter_hojas_valores` — un archivo corrupto se trataba como "0
-        // filas" en silencio, sin que el usuario se enterara de que en
-        // realidad nunca se pudo leer.
+        // `avisar` debe llegar hasta `iter_hojas_valores`: sin él, un archivo
+        // corrupto se reporta como "0 filas" y el usuario no distingue eso de
+        // un archivo que de verdad no tenía duplicados.
         let tmp = tempfile::tempdir().unwrap();
         let archivo = tmp.path().join("corrupto.xlsx");
         std::fs::write(&archivo, b"esto no es un xlsx").unwrap();
@@ -322,7 +316,10 @@ mod tests {
         )?;
         assert_eq!(n_dup, 3);
         assert_eq!(n_lim, 3);
-        assert_eq!(ruta_lim_real.map(|r| r.into_path_buf()), Some(lim.clone()));
+        assert_eq!(
+            ruta_lim_real.map(commerce_core::RutaEscritaReal::into_path_buf),
+            Some(lim.clone())
+        );
 
         let hojas_rep = commerce_core::iter_hojas_xlsx(&rep, None, |_| {});
         let vals: Vec<_> = hojas_rep[0]
@@ -353,13 +350,9 @@ mod tests {
 
     #[test]
     fn ruta_limpia_real_difiere_de_la_pedida_si_ya_existe_un_temporal_rancio() -> CoreResult<()> {
-        // Reproduce el bug de pérdida de datos: si queda un
-        // "{stem}__tmp_limpio.xlsx" de una corrida anterior interrumpida,
-        // `EscritorXlsx` lo esquiva escribiendo en "(1).xlsx" en su lugar —
-        // el llamador DEBE enterarse de esa ruta real para saber qué
-        // renombrar sobre el archivo original; si usara la ruta pedida,
-        // renombraría la basura rancia (nunca tocada por esta llamada) sobre
-        // los datos del usuario.
+        // Con un "{stem}__tmp_limpio.xlsx" ya ocupado, `EscritorXlsx` escribe
+        // en "(1).xlsx". El llamador necesita ESA ruta para renombrar sobre el
+        // original: con la pedida movería un archivo que nunca escribió.
         let tmp = tempfile::tempdir().unwrap();
         let archivo = tmp.path().join("dup.xlsx");
         escribir_libro(

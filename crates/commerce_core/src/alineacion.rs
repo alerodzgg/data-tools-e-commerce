@@ -11,11 +11,9 @@ use crate::error::CoreResult;
 /// en cada bloque); columnas FALTANTES se rellenan con `None`. Devuelve `df`
 /// recortado/reordenado a exactamente `columnas`.
 ///
-/// Compartida entre `EscritorXlsx::alinear` y `EscritorCsv::alinear`, que
-/// antes implementaban la MISMA lógica casi línea por línea — divergían
-/// solo en el mensaje de aviso (uno menciona la hoja, el otro no), que por
-/// eso queda a cargo de `avisar` (recibe los nombres nuevos, no un mensaje
-/// ya armado).
+/// Compartida por `EscritorXlsx::alinear` y `EscritorCsv::alinear`. El
+/// mensaje de aviso queda a cargo de `avisar` (recibe los nombres nuevos, no
+/// un texto ya armado) porque difiere entre ambos: uno menciona la hoja.
 pub(crate) fn alinear_columnas(
     df: &DataFrame,
     columnas: &[String],

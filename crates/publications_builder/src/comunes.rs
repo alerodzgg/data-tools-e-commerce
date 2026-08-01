@@ -4,7 +4,7 @@ use std::sync::LazyLock;
 
 use commerce_core::CoreResult;
 use polars::prelude::*;
-use regex::{Regex, RegexBuilder};
+use regex::Regex;
 
 use crate::constantes::{
     precio_de_rango, CANTIDAD_CARACTERES_OEM3, COL_IMAGENES, COL_MOTIVO_ELIMINACION, COL_OEM, COL_PRECIO,
@@ -12,12 +12,12 @@ use crate::constantes::{
     URL_REGEX, URL_REPLACE_REGEX,
 };
 
-static PALABRA: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b\w+\b").unwrap());
-static RE_URL: LazyLock<Regex> = LazyLock::new(|| Regex::new(URL_REGEX).unwrap());
-static RE_URL_REPLACE: LazyLock<Regex> = LazyLock::new(|| Regex::new(URL_REPLACE_REGEX).unwrap());
-pub(crate) static RE_VIDEO: LazyLock<Regex> =
-    LazyLock::new(|| RegexBuilder::new("video").case_insensitive(true).build().unwrap());
-static RE_TIENDA_SIMBOLOS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[\s:_\-.,*/\\]").unwrap());
+static PALABRA: LazyLock<Regex> = LazyLock::new(|| commerce_core::regex_literal(r"\b\w+\b"));
+static RE_URL: LazyLock<Regex> = LazyLock::new(|| commerce_core::regex_literal(URL_REGEX));
+static RE_URL_REPLACE: LazyLock<Regex> = LazyLock::new(|| commerce_core::regex_literal(URL_REPLACE_REGEX));
+pub(crate) static RE_VIDEO: LazyLock<Regex> = LazyLock::new(|| commerce_core::regex_literal_sin_may("video"));
+static RE_TIENDA_SIMBOLOS: LazyLock<Regex> =
+    LazyLock::new(|| commerce_core::regex_literal(r"[\s:_\-.,*/\\]"));
 
 fn capitalizar(s: &str) -> String {
     let mut chars = s.chars();
@@ -125,8 +125,7 @@ pub fn mask_sin_imagenes(df: &DataFrame) -> CoreResult<Vec<bool>> {
 /// prioridad: cada fila cae en la PRIMERA máscara de la lista que la marque
 /// (`true`) y queda etiquetada con su motivo; lo que no matchea ninguna
 /// categoría es "válida". Evita repetir a mano, en cada motivo sucesivo, el
-/// patrón "esta condición Y no las ya categorizadas antes" — antes vivía
-/// copiado inline una vez por motivo (2 veces en `unicas`, 3 en `amazon`).
+/// patrón "esta condición Y ninguna de las ya categorizadas".
 pub fn separar_por_categorias(
     df: &DataFrame,
     categorias: &[(&[bool], &str)],
@@ -329,7 +328,7 @@ pub fn agregar_caracteristicas_y_cantidades(df: &DataFrame) -> CoreResult<DataFr
     Ok(df)
 }
 
-static RE_DIGITOS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\d+").unwrap());
+static RE_DIGITOS: LazyLock<Regex> = LazyLock::new(|| commerce_core::regex_literal(r"\d+"));
 
 /// Extrae la primera racha de dígitos de `columna` y la deja como entero
 /// (0 si no hay ninguna). Usado por 'unicas' y 'amazon' (compatibilidades
@@ -351,7 +350,7 @@ pub fn extraer_precio_entero(df: &DataFrame, columna: &str) -> CoreResult<DataFr
 }
 
 /// Regex del identificador de artículo eBay al final de la URL.
-pub static RE_ID_EBAY: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"/(\d+)(?:\?|$)").unwrap());
+pub static RE_ID_EBAY: LazyLock<Regex> = LazyLock::new(|| commerce_core::regex_literal(r"/(\d+)(?:\?|$)"));
 
 /// Limpiezas y transformaciones comunes a todos los modos: normaliza las URLs
 /// de imagen y genera el SKU base (estilo eBay); la transformación de OEM
@@ -415,11 +414,11 @@ mod tests {
 
     #[test]
     fn jitter_no_colisiona_entre_llamadas_cuando_el_contador_persiste() -> CoreResult<()> {
-        // Antes: cada llamada (una por hoja/chunk) arrancaba el índice del
-        // jitter en 0, así que la fila 0 de dos hojas DISTINTAS con el mismo
-        // precio recibía el MISMO Precio2 — colisión sistemática, no solo
-        // una coincidencia aleatoria. Varias filas por hoja: con una sola
-        // fila, una coincidencia de hash 1-en-50 podría hacer flaky el test.
+        // El índice del jitter debe PERSISTIR entre llamadas (una por
+        // hoja/chunk): si cada una arrancara en 0, la fila 0 de dos hojas con
+        // el mismo precio recibiría el mismo Precio2, una colisión
+        // sistemática. Varias filas por hoja para que una coincidencia de
+        // hash 1-en-50 no vuelva flaky el test.
         let df = df!("Precio" => [85, 85, 85, 85, 85])?;
         let mut contador = 0u64;
         let hoja1 = columna_precio2(&df, "Precio", Some(&mut contador))?;

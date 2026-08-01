@@ -2,9 +2,7 @@
 //! streaming entre Hoja1 y las hojas de compatibilidad, más el motor de I/O
 //! particionado (dedup GLOBAL de 'Combinada' vía
 //! `commerce_core::AcumuladorParticionado`). El parsing puro vive en
-//! [`parsing`] y las reglas de negocio de filtrado en [`filtros`] — antes
-//! los tres vivían mezclados en un único archivo de 1552 líneas (Ronda 9 de
-//! auditoría).
+//! [`parsing`] y las reglas de negocio de filtrado en [`filtros`].
 
 use std::collections::{HashMap, HashSet};
 use std::ops::Not;
@@ -148,11 +146,10 @@ fn despachar_unido(sub: &DataFrame, ctx: &mut ContextoUnido) -> CoreResult<()> {
     Ok(())
 }
 
-/// `true` si `hoja` tiene el formato `HojaN` (N = uno o más dígitos),
-/// sin distinguir mayúsculas/minúsculas ni espacios — el nombre que genera
-/// el scraper para las hojas de compatibilidad (Hoja2, Hoja3…). Antes se
-/// usaba `contains("Hoja")`, que colaba falsos positivos como "HojaResumen"
-/// y descartaba en silencio "hoja2" en minúscula.
+/// `true` si `hoja` tiene el formato `HojaN` (N = uno o más dígitos), sin
+/// distinguir mayúsculas/minúsculas ni espacios — el nombre que genera el
+/// scraper para las hojas de compatibilidad (Hoja2, Hoja3…). Debe ser un
+/// match de forma completa: `contains("Hoja")` aceptaría "HojaResumen".
 fn es_hoja_de_compatibilidad(hoja: &str) -> bool {
     let normalizada = hoja.trim().to_lowercase();
     normalizada
@@ -242,12 +239,9 @@ pub fn ejecutar_procesamiento_compatibilidad(
     let mut libro = commerce_core::abrir_libro(archivo_entrada)?;
     let sheet_names = commerce_core::nombres_hojas_libro(&libro);
 
-    // Comparación case/espacio-insensible, igual que `iter_bloques_compat`
-    // hace para Hoja2/Hoja3... (`es_hoja_de_compatibilidad`): antes esta
-    // búsqueda comparaba contra el literal exacto `"Hoja1"`, así que un
-    // archivo con la hoja principal llamada `"hoja1"` (minúscula) hacía
-    // fallar esta condición y el modo Compatibilidades/Comprimidas no
-    // procesaba nada, sin ninguna pista real de la causa.
+    // Case/espacio-insensible, igual que `es_hoja_de_compatibilidad` para
+    // Hoja2/Hoja3…: el scraper puede emitir "hoja1" en minúscula, y sin esta
+    // normalización el archivo entero quedaría sin procesar.
     let Some(nombre_hoja1) = sheet_names
         .iter()
         .find(|h| h.trim().eq_ignore_ascii_case("hoja1"))
@@ -549,14 +543,11 @@ mod tests {
 
     #[test]
     fn dedup_de_combinada_es_global_entre_hojas_no_solo_local_por_sub_bloque() -> CoreResult<()> {
-        // Antes: el dedup por menor 'Precio2' era LOCAL a cada llamada de
-        // `despachar_unido` — y cada hoja de compatibilidad (Hoja2, Hoja3…)
-        // se procesa en su PROPIA invocación. Dos productos DISTINTOS que
-        // resuelven a la MISMA 'Combinada' pero llegan por hojas distintas
-        // sobrevivían los dos, cada uno "deduplicado" solo contra sí mismo.
-        // Ahora el dedup es GLOBAL (`AcumuladorParticionado` particiona por
-        // hash de 'Combinada' y recién deduplica al final, entre TODAS las
-        // hojas): debe sobrevivir solo el de menor Precio2.
+        // El dedup de 'Combinada' es GLOBAL: cada hoja de compatibilidad se
+        // procesa en su propia invocación, así que dos productos distintos
+        // que resuelven a la MISMA 'Combinada' por hojas distintas deben
+        // compararse igual entre sí. `AcumuladorParticionado` los reúne por
+        // hash y deduplica al final; sobrevive solo el de menor Precio2.
         let tmp = tempfile::tempdir().unwrap();
         let entrada = tmp.path().join("dup_entre_hojas.xlsx");
         escribir_libro(
@@ -615,8 +606,7 @@ mod tests {
 
     #[test]
     fn hoja_de_compatibilidad_en_minuscula_se_procesa_igual() -> CoreResult<()> {
-        // Antes: el filtro comparaba con `== "Hoja1"` y `contains("Hoja")`
-        // sin normalizar mayúsculas — "hoja2" se descartaba en silencio.
+        // El scraper puede emitir los nombres de hoja en minúscula.
         let tmp = tempfile::tempdir().unwrap();
         let entrada = tmp.path().join("minuscula.xlsx");
         escribir_libro(
@@ -661,12 +651,8 @@ mod tests {
 
     #[test]
     fn hoja1_en_minuscula_se_procesa_igual() -> CoreResult<()> {
-        // Antes: `sheet_names.iter().any(|h| h == "Hoja1")` y la lectura
-        // posterior comparaban con el literal exacto "Hoja1" — un archivo
-        // con la hoja principal llamada "hoja1" (minúscula) hacía fallar la
-        // condición y el modo Compatibilidades/Comprimidas no procesaba
-        // nada, con el aviso engañoso "No se encontró la 'Hoja1'" pese a que
-        // el archivo sí la tenía (solo que en minúscula).
+        // La hoja principal en minúscula debe encontrarse igual: si no, el
+        // archivo no se procesa y el aviso culpa a una hoja que sí existe.
         let tmp = tempfile::tempdir().unwrap();
         let entrada = tmp.path().join("hoja1_minuscula.xlsx");
         escribir_libro(
@@ -703,9 +689,8 @@ mod tests {
 
     #[test]
     fn hoja_con_nombre_no_estandar_se_ignora_con_aviso() -> CoreResult<()> {
-        // Antes: `contains("Hoja")` aceptaba falsos positivos como
-        // "HojaResumen" y los unía contra Hoja1 como si fueran datos de
-        // compatibilidad reales.
+        // Una hoja cuyo nombre solo CONTIENE "Hoja" no es de compatibilidad:
+        // unirla contra Hoja1 mezclaría datos ajenos en el resultado.
         let tmp = tempfile::tempdir().unwrap();
         let entrada = tmp.path().join("no_estandar.xlsx");
         escribir_libro(
@@ -843,9 +828,8 @@ mod tests {
 
     #[test]
     fn progreso_suma_el_total_de_filas_de_todas_las_hojas_con_url() {
-        // Antes de este fix, el loop que procesa las filas de Hoja1
-        // ("No_Procesadas") nunca llamaba a `progreso`: la barra nunca
-        // llegaba al 100% aunque el proceso terminara bien.
+        // El progreso debe contar TAMBIÉN las filas de Hoja1 que van a
+        // "No_Procesadas", no solo las de las hojas de compatibilidad.
         let tmp = tempfile::tempdir().unwrap();
         let entrada = tmp.path().join("progreso.xlsx");
         escribir_libro(
@@ -891,9 +875,8 @@ mod tests {
 
     #[test]
     fn progreso_avanza_aunque_hoja1_no_tenga_columna_de_url() {
-        // Sin `web-scraper-start-url`, el loop de compatibilidad (`tiene_url`)
-        // ni siquiera corre — antes de este fix eso significaba CERO avances
-        // de progreso en toda la corrida, barra congelada en 0%.
+        // Sin `web-scraper-start-url` el loop de compatibilidad no corre:
+        // el progreso debe avanzar igual con las filas de Hoja1.
         let tmp = tempfile::tempdir().unwrap();
         let entrada = tmp.path().join("sin_url.xlsx");
         escribir_libro(

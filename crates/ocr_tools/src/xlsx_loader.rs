@@ -151,7 +151,7 @@ fn concat_diagonal(dfs: Vec<DataFrame>) -> PolarsResult<DataFrame> {
 /// Lista los `.xlsx` de un directorio, en orden alfabético.
 pub fn list_xlsx_files(directory: &Path) -> std::io::Result<Vec<PathBuf>> {
     let mut archivos: Vec<PathBuf> = std::fs::read_dir(directory)?
-        .filter_map(|e| e.ok())
+        .filter_map(|r| r.ok())
         .map(|e| e.path())
         .filter(|p| {
             p.is_file()
@@ -285,8 +285,8 @@ mod tests {
 
     #[test]
     fn list_xlsx_files_no_ignora_extension_en_mayusculas() {
-        // Antes: la comparación era case-sensitive (`== Some("xlsx")`), así
-        // que un archivo "Reporte.XLSX" desaparecía en silencio del listado.
+        // La extensión se compara sin distinguir mayúsculas: "Reporte.XLSX"
+        // debe aparecer en el listado igual que "reporte.xlsx".
         let tmp = tempfile::tempdir().unwrap();
         escribir(&tmp.path().join("Reporte.XLSX"), &[("H", vec![vec!["A"]])]);
 

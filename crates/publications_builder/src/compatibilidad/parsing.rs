@@ -1,9 +1,7 @@
 //! Capa de PARSING/normalización de 'Compatibilidades'/'Comprimidas': solo
 //! transforma `DataFrame`s (precio, hoja completa, SKU secuencial, columna
-//! 'Combinada') — nada de E/S ni reglas de negocio sobre qué se descarta.
-//! Separado del resto de `compatibilidad` (Ronda 9 de auditoría) porque
-//! antes vivía en un único archivo de 1552 líneas que mezclaba esta capa con
-//! el motor de I/O particionado y las reglas de filtrado.
+//! 'Combinada') — nada de E/S ni reglas de negocio sobre qué se descarta,
+//! que viven en [`super::filtros`] y en el módulo padre.
 
 use std::collections::HashMap;
 use std::ops::Not;
@@ -17,12 +15,13 @@ use super::ModoCompatibilidad;
 use crate::comunes::{columna_precio2, columna_texto, RE_VIDEO};
 use crate::constantes::{COL_IMAGENES, COL_PRECIO, COL_TITULO, LINEA_EN_MODELO_PATTERN};
 
-static RE_HASTA_DOLAR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^.*?\$").unwrap());
-static RE_DESDE_PUNTO: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\..*$").unwrap());
-static RE_LINEA_EN_MODELO: LazyLock<Regex> = LazyLock::new(|| Regex::new(LINEA_EN_MODELO_PATTERN).unwrap());
-static RE_PRIMER_TOKEN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(\S+)").unwrap());
-static RE_PUNTO_CERO: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\.0$").unwrap());
-static RE_ESPACIOS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").unwrap());
+static RE_HASTA_DOLAR: LazyLock<Regex> = LazyLock::new(|| commerce_core::regex_literal(r"^.*?\$"));
+static RE_DESDE_PUNTO: LazyLock<Regex> = LazyLock::new(|| commerce_core::regex_literal(r"\..*$"));
+static RE_LINEA_EN_MODELO: LazyLock<Regex> =
+    LazyLock::new(|| commerce_core::regex_literal(LINEA_EN_MODELO_PATTERN));
+static RE_PRIMER_TOKEN: LazyLock<Regex> = LazyLock::new(|| commerce_core::regex_literal(r"^(\S+)"));
+static RE_PUNTO_CERO: LazyLock<Regex> = LazyLock::new(|| commerce_core::regex_literal(r"\.0$"));
+static RE_ESPACIOS: LazyLock<Regex> = LazyLock::new(|| commerce_core::regex_literal(r"\s+"));
 
 /// Precio vectorizado de Hoja1: lo que queda tras el primer '$' y antes del
 /// primer '.'; luego a entero (los no numéricos caen a 0). Distinto de

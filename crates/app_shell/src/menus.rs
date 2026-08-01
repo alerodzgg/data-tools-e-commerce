@@ -16,8 +16,8 @@ use crate::navegacion::{FlujoError, FlujoResult};
 const VOLVER: &str = "\u{ab} Volver al menú principal \u{bb}";
 
 /// Bajo un guion de test, resuelve un menú de selección ÚNICA consumiendo el
-/// próximo índice programado. Compartido entre `menu_seleccionar` y
-/// `menu_seleccionar_nav`, que antes repetían este mismo bloque.
+/// próximo índice programado. Compartido por `menu_seleccionar` y
+/// `menu_seleccionar_nav`.
 fn tomar_eleccion_de_guion<T>(mensaje: &str, opciones: Vec<T>) -> Option<T> {
     crate::testing::tomar_eleccion(mensaje).map(|indice| {
         opciones
@@ -28,8 +28,8 @@ fn tomar_eleccion_de_guion<T>(mensaje: &str, opciones: Vec<T>) -> Option<T> {
 }
 
 /// Bajo un guion de test, resuelve un menú de selección MÚLTIPLE consumiendo
-/// los próximos índices marcados. Compartido entre `menu_multiple` y
-/// `menu_multiple_preseleccionado`, que antes repetían este mismo bloque.
+/// los próximos índices marcados. Compartido por `menu_multiple` y
+/// `menu_multiple_preseleccionado`.
 fn tomar_marcadas_de_guion<T>(mensaje: &str, opciones: Vec<T>) -> Vec<T> {
     let marcadas = crate::testing::tomar_marcadas(mensaje);
     let mut opciones: Vec<Option<T>> = opciones.into_iter().map(Some).collect();
@@ -46,11 +46,9 @@ fn tomar_marcadas_de_guion<T>(mensaje: &str, opciones: Vec<T>) -> Vec<T> {
 
 /// Envoltorio que muestra el nombre de archivo (no la ruta completa) en los
 /// menús, pero conserva la `PathBuf` para devolverla. Cuando el nombre se
-/// repite entre las opciones de la lista (mismo archivo en carpetas
-/// distintas), suma la carpeta padre para poder distinguirlas a simple
-/// vista — antes dos archivos de igual nombre se veían idénticos en el menú
-/// y solo se podían distinguir eligiendo "a ciegas" y confiando en la
-/// posición.
+/// repite entre las opciones (mismo archivo en carpetas distintas), suma la
+/// carpeta padre: sin eso, dos opciones se verían idénticas y solo podrían
+/// distinguirse por su posición en la lista.
 struct ArchivoOpcion {
     ruta: PathBuf,
     mostrar_carpeta: bool,
@@ -233,12 +231,10 @@ pub fn menu_multiple_preseleccionado<T: fmt::Display>(
         .unwrap_or_default())
 }
 
-/// Pregunta Sí/No con flechas. `None` si el usuario cancela (ESC) — distinto
-/// de confirmar el valor por defecto con Enter. Antes devolvía `bool` a
-/// secas y absorbía el ESC como si fuera `por_defecto`, así que el llamador
-/// no podía distinguir "canceló" de "confirmó el valor por defecto".
-/// Acepta "s"/"si"/"sí" (y, por compatibilidad, "y"/"yes") para sí; "n"/"no"
-/// para no — sin distinguir mayúsculas/acentos.
+/// Pregunta Sí/No con flechas. `None` si el usuario cancela (ESC) — un caso
+/// distinto de confirmar el valor por defecto con Enter, que el llamador
+/// necesita poder diferenciar. Acepta "s"/"si"/"sí" (y "y"/"yes") para sí;
+/// "n"/"no" para no — sin distinguir mayúsculas/acentos.
 fn confirmar_parser(respuesta: &str) -> Result<bool, ()> {
     match respuesta.trim().to_lowercase().as_str() {
         "s" | "si" | "sí" | "y" | "yes" => Ok(true),
@@ -271,10 +267,9 @@ pub fn menu_confirmar(mensaje: &str, por_defecto: bool) -> FlujoResult<Option<bo
         .prompt_skippable()?)
 }
 
-/// Entrada de texto libre. `None` si el usuario cancela (ESC) — distinto de
-/// confirmar con Enter una cadena vacía. Antes devolvía `String` a secas y
-/// absorbía el ESC como cadena vacía, así que el llamador no podía
-/// distinguir "canceló" de "escribió/confirmó vacío".
+/// Entrada de texto libre. `None` si el usuario cancela (ESC) — un caso
+/// distinto de confirmar con Enter una cadena vacía, que el llamador
+/// necesita poder diferenciar.
 pub fn pedir_texto(mensaje: &str) -> FlujoResult<Option<String>> {
     if crate::testing::activo() {
         return Ok(crate::testing::tomar_texto(mensaje).map(|t| t.trim().to_string()));
@@ -309,9 +304,8 @@ mod tests {
 
     #[test]
     fn menu_confirmar_distingue_cancelar_de_confirmar_el_valor_por_defecto() {
-        // Antes: `menu_confirmar` devolvía `bool` a secas y absorbía el ESC
-        // como si fuera `por_defecto` — el llamador no podía distinguir
-        // "canceló" de "confirmó explícitamente el valor por defecto".
+        // Cancelar y confirmar el valor por defecto deben ser distinguibles:
+        // por eso el retorno es `Option<bool>` y no `bool`.
         let confirmado = con_guion(vec![Respuesta::Confirmar(false)], || {
             menu_confirmar("¿ok?", false).unwrap()
         });
@@ -379,11 +373,9 @@ mod tests {
 
     #[test]
     fn elegir_archivo_devuelve_el_del_indice_elegido_no_el_primero_con_igual_nombre() {
-        // Antes: la selección se reemparejaba buscando por IGUALDAD del
-        // nombre mostrado (solo el nombre de archivo, sin carpeta) en vez de
-        // por posición — con dos archivos "data.xlsx" en carpetas distintas,
-        // `elegir_archivo` siempre devolvía el primero de la lista sin
-        // importar cuál se hubiera elegido en el menú.
+        // La opción elegida se recupera por POSICIÓN, no buscando por el
+        // texto mostrado: dos archivos que se muestran igual (mismo nombre en
+        // carpetas distintas) devolverían siempre el primero de la lista.
         let archivos = vec![
             PathBuf::from("carpetaA/data.xlsx"),
             PathBuf::from("carpetaB/data.xlsx"),

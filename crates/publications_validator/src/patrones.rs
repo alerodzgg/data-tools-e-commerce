@@ -75,16 +75,20 @@ impl Patrones {
             .join("|");
 
         Self {
-            prohibidas: Regex::new(&patron_prohibidas).unwrap(),
-            re_x_hex: Regex::new(r"_x[0-9A-Fa-f]{4}_").unwrap(),
-            re_control: Regex::new(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]").unwrap(),
-            re_espacios_especiales: Regex::new(r"[\u{00A0}\u{2000}-\u{200A}\u{202F}\u{205F}\u{3000}]").unwrap(),
-            re_invisibles: Regex::new(r"[\u{200B}\u{200C}\u{200D}\u{FEFF}]").unwrap(),
-            re_espacios_multi: Regex::new(r"\s+").unwrap(),
-            re_seis_digitos: Regex::new(r"\d{6}").unwrap(),
-            re_secuencia: Regex::new(&patron_secuencia).unwrap(),
-            re_decimales: Regex::new(r"(?:\d+\.\d+[\s/]){3,}\d+\.\d+").unwrap(),
-            re_seg_prefiltro: Regex::new(r"(?:\b[a-zA-Z0-9]{3,4}[\s/]){3,}\b[a-zA-Z0-9]{3,4}\b").unwrap(),
+            prohibidas: commerce_core::regex_literal(&patron_prohibidas),
+            re_x_hex: commerce_core::regex_literal(r"_x[0-9A-Fa-f]{4}_"),
+            re_control: commerce_core::regex_literal(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]"),
+            re_espacios_especiales: commerce_core::regex_literal(r"[\u{00A0}\u{2000}-\u{200A}\u{202F}\u{205F}\u{3000}]"),
+            re_invisibles: commerce_core::regex_literal(r"[\u{200B}\u{200C}\u{200D}\u{FEFF}]"),
+            re_espacios_multi: commerce_core::regex_literal(r"\s+"),
+            re_seis_digitos: commerce_core::regex_literal(r"\d{6}"),
+            re_secuencia: commerce_core::regex_literal(&patron_secuencia),
+            re_decimales: commerce_core::regex_literal(r"(?:\d+\.\d+[\s/]){3,}\d+\.\d+"),
+            re_seg_prefiltro: commerce_core::regex_literal(r"(?:\b[a-zA-Z0-9]{3,4}[\s/]){3,}\b[a-zA-Z0-9]{3,4}\b"),
+            // Patrón literal (`fancy_regex`, no cubierto por
+            // `commerce_core::regex_literal`): un error acá es de
+            // programación y debe verse en la primera corrida.
+            #[allow(clippy::unwrap_used)]
             re_segmentos: FancyRegex::new(
                 r"(?=(?:.*?\b(?:\w*\d\w*\d\w*\d\w*)\b){3,})(?:\b[a-zA-Z0-9]{3,4}[\s/]){3,}\b[a-zA-Z0-9]{3,4}\b",
             )

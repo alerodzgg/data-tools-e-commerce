@@ -1,10 +1,9 @@
 //! ocr_tools — motor OCR (CRAFT + reconocedor VGG-BiLSTM-CTC) vía ONNX Runtime.
 
-// Política de la Ronda 9 de auditoría (ver docs/decisiones/0006-tests-reactivos-vs-invariantes.md):
-// este crate procesa entrada no confiable (imágenes descargadas de red,
-// .xlsx de terceros, salidas de un modelo ONNX) en un pipeline async de
-// larga duración — un panic ahí tumba el proceso completo y pierde trabajo
-// ya hecho. `cfg(test)` desactiva el lint para el propio código de test.
+// Este crate procesa entrada no confiable (imágenes de red, .xlsx de
+// terceros, salidas de un modelo ONNX) en un pipeline async largo: un panic
+// tumba el proceso y pierde trabajo ya hecho. El lint se desactiva bajo
+// `cfg(test)`.
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use std::path::{Path, PathBuf};

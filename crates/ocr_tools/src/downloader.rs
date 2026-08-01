@@ -140,7 +140,7 @@ fn resolver_con_timeout(host: &str, puerto: u16) -> Option<Vec<std::net::SocketA
     std::thread::spawn(move || {
         let resultado = (host.as_str(), puerto)
             .to_socket_addrs()
-            .map(|it| it.collect::<Vec<_>>());
+            .map(std::iter::Iterator::collect::<Vec<_>>);
         let _ = tx.send(resultado);
     });
     rx.recv_timeout(TIMEOUT_DNS_REDIRECT).ok()?.ok()
@@ -439,9 +439,9 @@ mod tests {
 
     #[tokio::test]
     async fn fetch_rechaza_content_type_que_no_es_imagen_sin_reintentar() {
-        // Antes: se bufferizaba el cuerpo entero (hasta MAX_RESPUESTA_BYTES)
-        // de un 200 con Content-Type no-imagen (p. ej. una página de error
-        // HTML) antes de que `decode_and_resize` lo rechazara más adelante.
+        // Un 200 con Content-Type no-imagen (p. ej. una página de error
+        // HTML) se corta acá: bufferizarlo hasta MAX_RESPUESTA_BYTES para que
+        // `decode_and_resize` lo rechace después es trabajo tirado.
         let (url, contador) = servidor_mock(vec![
             "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 13\r\nConnection: close\r\n\r\n<html></html>",
         ]);
@@ -693,7 +693,7 @@ mod tests {
             FalloDescarga::DemasiadoGrande,
             FalloDescarga::CuerpoIncompleto,
         ];
-        let mensajes: Vec<String> = todos.iter().map(|f| f.to_string()).collect();
+        let mensajes: Vec<String> = todos.iter().map(|s| s.to_string()).collect();
         assert!(mensajes.iter().all(|m| !m.trim().is_empty()));
         let unicos: std::collections::HashSet<&String> = mensajes.iter().collect();
         assert_eq!(unicos.len(), mensajes.len(), "mensajes duplicados: {mensajes:?}");

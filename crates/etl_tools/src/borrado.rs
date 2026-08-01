@@ -62,11 +62,10 @@ pub fn procesar_columnas_con_desplazamiento(
         let mut supervivientes: Vec<String> = Vec::with_capacity(n_cols);
         for (ci, nombre) in columnas.iter().enumerate() {
             let valor = valores[ci][fila].as_deref();
-            let vacio = valor.map(|v| v.trim().is_empty()).unwrap_or(true);
             if coincide(nombre, valor) {
                 n_coincidencias += 1;
-            } else if !vacio {
-                supervivientes.push(valor.unwrap().trim().to_string());
+            } else if let Some(texto) = valor.map(str::trim).filter(|v| !v.is_empty()) {
+                supervivientes.push(texto.to_string());
             }
         }
 
@@ -109,7 +108,7 @@ pub fn procesar_columnas_con_desplazamiento(
     let mut df_borradas = df.filter(&mascara_borradas)?;
     let motivos: Vec<String> = (0..n)
         .filter(|&fila| !es_valida[fila])
-        .map(|fila| motivo_por_fila[fila].clone().unwrap())
+        .filter_map(|fila| motivo_por_fila[fila].clone())
         .collect();
     df_borradas.with_column(Column::new("Motivo_Borrado".into(), motivos))?;
 

@@ -6,6 +6,12 @@
 //! son responsabilidad de una futura capa de interfaz interactiva, que
 //! llamará a [`combinar`] pasándole callbacks de aviso/progreso.
 
+// Un panic en produccion aborta el proceso completo; en tests, en cambio,
+// `.unwrap()`/`.expect()` es la forma normal de fallar rapido. El lint se
+// activa solo fuera de `cfg(test)`. Las excepciones legitimas se anotan caso
+// por caso con `#[allow(...)]` y su justificacion.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 pub mod combinar;
 pub mod constantes;
 pub mod escritor_particionado;

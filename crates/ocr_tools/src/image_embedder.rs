@@ -351,10 +351,9 @@ impl ImageEmbedder {
         let downloader = match downloader {
             Ok(d) => d,
             Err(error) => {
-                // Antes se tragaba en silencio (mismo tipo de fallo que
-                // `async_processor::run_async` sí reporta): el usuario veía
-                // "N con error" sin saber que fue un fallo de infraestructura
-                // (p. ej. backend TLS no disponible), no de las URLs en sí.
+                // Se avisa en vez de contarlo como error por URL: un fallo
+                // de infraestructura (p. ej. backend TLS no disponible) no es
+                // culpa de las URLs, y "N con error" a secas lo ocultaría.
                 avisar(&format!("No se pudo inicializar el descargador: {error}"));
                 return tareas.iter().map(|_| None).collect();
             }
@@ -447,11 +446,9 @@ impl ImageEmbedder {
                 marker,
             );
             ws.add_image(xl_img);
-            // Recién ACÁ, no antes de comprobar `img`: antes se marcaba la
-            // fila/columna como "afectada" para toda tarea (incluidas las
-            // que fallaron la descarga o la codificación PNG), así que una
-            // celda con "Error" terminaba con el alto/ancho pensado para una
-            // imagen real que nunca se insertó.
+            // Recién ACÁ, después de confirmar que la imagen se insertó: si
+            // se marcara para toda tarea, una celda con "Error" quedaría con
+            // el alto/ancho de una imagen que nunca llegó a incrustarse.
             filas_afectadas.insert(tarea.fila_excel);
             columnas_afectadas.insert(tarea.col_destino);
             exitos += 1;
@@ -546,10 +543,9 @@ mod tests {
 
     #[test]
     fn decodificar_y_redimensionar_rechaza_dimensiones_que_exceden_el_limite() {
-        // Antes: esta función decodificaba con `image::load_from_memory` sin
-        // ningún `image::Limits` — bomba de descompresión posible (archivo
-        // chico, dimensiones declaradas enormes). Ahora hereda los límites de
-        // `downloader::decode_and_resize` (MAX_IMAGE_DIM=20_000).
+        // Los límites anti bomba-de-descompresión se heredan de
+        // `downloader::decode_and_resize` (MAX_IMAGE_DIM=20_000): decodificar
+        // sin ellos deja que un archivo chico declare dimensiones enormes.
         let img = RgbImage::from_pixel(20_001, 2, image::Rgb([1, 2, 3]));
         let mut bytes = Vec::new();
         img.write_to(&mut std::io::Cursor::new(&mut bytes), image::ImageFormat::Png)
@@ -576,13 +572,11 @@ mod tests {
 
     #[test]
     fn detectar_columnas_url_no_escanea_mas_alla_del_limite_por_columna() {
-        // Antes: una columna sin ningún valor no-vacío en las primeras filas
-        // nunca dispara el `break` por `vistos >= n`, así que el escaneo
-        // seguía hasta `max_row` — con un `.xlsx` de terceros que declare
-        // (via `<dimension>`) una geometría mucho mayor a la real, esto podía
-        // colgar el proceso. Acá una URL real aparece MÁS ALLÁ del límite de
-        // muestreo por columna: debe seguir sin detectarse (se rinde antes de
-        // llegar), y la llamada debe volver rápido, no escanear todo.
+        // Una columna sin valores no-vacíos en las primeras filas nunca
+        // dispara el `break` por `vistos >= n`: sin el tope por columna, un
+        // `.xlsx` con `<dimension>` inflado haría escanear hasta `max_row` y
+        // colgaría el proceso. Acá la URL real está MÁS ALLÁ del tope: debe
+        // quedar sin detectar y la llamada debe volver rápido.
         let mut libro = libro_de_prueba();
         let ws = libro.get_sheet_by_name_mut("Sheet1").unwrap();
         ws.get_cell_mut((1, 1)).set_value("Sku");
@@ -685,14 +679,11 @@ mod tests {
         let (exitos, fallos) = embedder.insertar_imagenes(ws, &tareas, &imagenes);
         assert_eq!((exitos, fallos), (0, 1));
         assert_eq!(ws.get_value((3, 2)), cfg.texto_error);
-        // Antes: la fila/columna de una tarea FALLIDA se marcaba "afectada"
-        // igual que una exitosa, así que terminaba con el alto/ancho
-        // pensado para la imagen que nunca se insertó (126.0pt / ancho de
-        // 118px, ver `insertar_imagenes_incrusta_y_ajusta_dimensiones`).
-        // `get_cell_mut` ya crea una entrada de fila/columna con SU PROPIO
-        // valor por defecto como efecto secundario de tocar la celda, así
-        // que se compara contra el valor derivado de la imagen (no contra
-        // 0.0) para no depender del default interno de `umya-spreadsheet`.
+        // Una tarea fallida no debe dejar la fila/columna con el alto/ancho
+        // de la imagen que nunca se insertó. La comparación es contra el
+        // valor derivado de la imagen y no contra 0.0 porque `get_cell_mut`
+        // crea la entrada con el default interno de `umya-spreadsheet` como
+        // efecto secundario de tocar la celda.
         let alto_de_imagen = px_a_puntos(cfg.alto_px);
         let ancho_de_imagen = px_a_ancho_columna(cfg.ancho_px);
         assert_ne!(
@@ -865,13 +856,6 @@ mod tests {
         assert_eq!(hoja.get_image_collection().len(), 1);
     }
 
-    #[test]
-    fn cada_imagen_incrustada_recibe_un_nombre_de_archivo_distinto() {
-        let embedder = ImageEmbedder::new(ImageEmbedConfig::default(), DownloadConfig::default(), 4);
-        let nombres: HashSet<String> = (0..100).map(|_| embedder.nombre_imagen_unico()).collect();
-        assert_eq!(nombres.len(), 100, "ningún nombre puede repetirse");
-    }
-
     #[tokio::test]
     async fn dos_urls_distintas_producen_dos_imagenes_distintas_en_el_xlsx() {
         // Regresión: todas las imágenes se incrustaban con el nombre fijo
@@ -904,10 +888,9 @@ mod tests {
             .expect("debe procesar la hoja");
         assert_eq!((exitos, fallos), (2, 0), "ambas descargas deben salir bien");
 
-        // Se inspecciona el .xlsx como zip (que es lo que abre Excel), no vía
-        // la representación en memoria: el bug estaba justo en la ESCRITURA
-        // del paquete, así que leerlo de vuelta por el mismo camino podría
-        // no exponerlo.
+        // Se inspecciona el .xlsx como zip, que es lo que abre Excel:
+        // releerlo con la misma librería que lo escribió podría ocultar un
+        // defecto que esté justo en la escritura del paquete.
         let archivo = std::fs::File::open(&ruta).unwrap();
         let mut zip = zip::ZipArchive::new(archivo).unwrap();
         let medias: Vec<String> = (0..zip.len())

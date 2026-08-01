@@ -6,16 +6,12 @@ use std::path::{Path, PathBuf};
 /// [`ruta_unica`] la redirigió por una colisión (p. ej. un temporal rancio
 /// de una corrida anterior interrumpida).
 ///
-/// Se distingue por TIPO, no solo por nombre de variable/comentario, de un
-/// `PathBuf` cualquiera: una función que vaya a sobrescribir el archivo
-/// ORIGINAL con el resultado de un escritor debe pedir este tipo, no
-/// `&Path` — así el compilador rechaza pasarle por error la ruta que se
-/// PIDIÓ en vez de la que realmente se usó. Esa confusión exacta causó
-/// pérdida de datos y se corrigió tres veces por separado, en tres
-/// funciones distintas (`buscarv`, `escribir_reporte_y_limpio`,
-/// `cruzar_y_escribir`), antes de que existiera este tipo — la clase entera
-/// de bug es irrepresentable para código que adopte `RutaEscritaReal` en su
-/// firma en vez de `&Path`/`PathBuf`.
+/// Se distingue por TIPO, no solo por nombre de variable, de un `PathBuf`
+/// cualquiera: una función que vaya a sobrescribir el archivo ORIGINAL con
+/// el resultado de un escritor debe pedir este tipo y no `&Path`, para que
+/// el compilador rechace pasarle la ruta que se PIDIÓ en lugar de la que
+/// realmente se usó. Confundirlas mueve un archivo ajeno sobre los datos
+/// del usuario.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RutaEscritaReal(PathBuf);
 
@@ -57,7 +53,10 @@ pub fn ruta_unica(ruta_base: impl AsRef<Path>) -> PathBuf {
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_default();
     let ext = ruta.extension().map(|s| s.to_string_lossy().into_owned());
-    let padre = ruta.parent().map(|p| p.to_path_buf()).unwrap_or_default();
+    let padre = ruta
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_default();
 
     let mut contador = 1u64;
     loop {

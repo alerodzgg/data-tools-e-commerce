@@ -899,12 +899,9 @@ mod tests {
 
     #[test]
     fn escritor_sanea_caracteres_de_control_del_nombre_de_hoja() -> CoreResult<()> {
-        // Antes: `sanear()`/`escapar_atributo` filtraban los caracteres
-        // prohibidos por Excel pero no los de control ilegales en XML 1.0
-        // (0x00-0x1F) — un nombre de hoja de un archivo de ORIGEN con un
-        // byte crudo de control generaba un `xl/workbook.xml` inválido. Este
-        // test verifica que el .xlsx resultante sigue siendo válido
-        // (se puede reabrir) y que el byte de control no sobrevive.
+        // Un nombre de hoja con un byte de control (0x00-0x1F) es ilegal en
+        // XML 1.0 y produciría un `xl/workbook.xml` inválido: el .xlsx debe
+        // seguir siendo reabrible y el byte no debe sobrevivir.
         let tmp = tempfile::tempdir().unwrap();
         let ruta = tmp.path().join("control.xlsx");
         let mut escritor = EscritorXlsx::nuevo(&ruta, OpcionesEscritorXlsx::default())?;
@@ -1036,10 +1033,9 @@ mod tests {
 
     #[test]
     fn sufijo_de_desempate_de_hoja_se_compone_siempre_sobre_el_nombre_original() -> CoreResult<()> {
-        // Fuerza una colisión de nombre de hoja que necesita DOS intentos de
-        // desempate ("_1" y "_2"): el bug componía el sufijo sobre el nombre
-        // YA truncado del intento anterior ("X_2_1_2") en vez de recalcularlo
-        // siempre desde el nombre original ("X_2_2").
+        // Colisión que necesita DOS intentos de desempate: el sufijo debe
+        // recalcularse siempre desde el nombre ORIGINAL ("X_2_2"), no
+        // componerse sobre el ya truncado del intento anterior ("X_2_1_2").
         let tmp = tempfile::tempdir().unwrap();
         let ruta = tmp.path().join("desempate.xlsx");
         let opciones = OpcionesEscritorXlsx {

@@ -287,12 +287,10 @@ mod tests {
 
     #[test]
     fn escribir_antepone_comilla_a_celdas_que_empiezan_con_disparador_de_formula() -> CoreResult<()> {
-        // Antes: `EscritorCsv` no mitigaba "CSV/Formula Injection" — una
-        // celda de texto que empezara con =, +, - o @ se escribía tal cual,
-        // y Excel/Sheets podían interpretarla como fórmula y ejecutarla al
-        // reabrir el archivo. `EscritorXlsx` no tiene este problema porque
-        // fuerza `inlineStr` (nunca fórmula) — era una asimetría real entre
-        // dos escritores que se presentan como intercambiables.
+        // Mitigación de "CSV/Formula Injection": una celda que empiece con
+        // =, +, - o @ puede ejecutarse como fórmula al reabrir el archivo en
+        // Excel/Sheets. `EscritorXlsx` no lo necesita porque fuerza
+        // `inlineStr`, pero ambos se ofrecen como intercambiables.
         let tmp = tempfile::tempdir().unwrap();
         let ruta = tmp.path().join("formulas.csv");
         {
@@ -313,10 +311,8 @@ mod tests {
 
     #[test]
     fn escribir_antepone_comilla_a_un_nombre_de_columna_que_dispara_formula() -> CoreResult<()> {
-        // Antes: `neutralizar_formulas` protegía los VALORES pero nunca los
-        // NOMBRES de columna. Un nombre de columna malicioso (p. ej. venido
-        // de una celda de cabecera de un xlsx externo) se escribía tal cual
-        // en la fila de cabecera del CSV, sin comilla protectora.
+        // Los NOMBRES de columna también se neutralizan: una cabecera venida
+        // de un xlsx externo llega igual de sin confiar que los valores.
         let tmp = tempfile::tempdir().unwrap();
         let ruta = tmp.path().join("cabecera_peligrosa.csv");
         {

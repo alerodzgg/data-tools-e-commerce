@@ -143,10 +143,9 @@ mod tests {
 
     #[test]
     fn linea_corrupta_no_descarta_las_entradas_validas_de_otras_lineas() {
-        // Antes: UNA línea inválida (p. ej. un corte a mitad de escritura
-        // tras un crash) descartaba TODO el historial ya leído, no solo esa
-        // línea — horas de OCR ya persistidas se perdían por un registro
-        // truncado.
+        // Una línea inválida (p. ej. un corte a mitad de escritura tras un
+        // crash) debe descartarse sola: tirar todo el historial perdería
+        // horas de OCR ya persistidas por un único registro truncado.
         let tmp = tempfile::tempdir().unwrap();
         let ruta = tmp.path().join("cp.jsonl");
         let mut contenido = serde_json::to_string(&entrada(0, "Imagen 1", true, "")).unwrap();

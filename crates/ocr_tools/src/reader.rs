@@ -135,10 +135,10 @@ impl Reader {
         free.retain(|q| {
             let xs = [q[0][0], q[1][0], q[2][0], q[3][0]];
             let ys = [q[0][1], q[1][1], q[2][1], q[3][1]];
-            let dx = xs.iter().cloned().fold(f32::NEG_INFINITY, f32::max)
-                - xs.iter().cloned().fold(f32::INFINITY, f32::min);
-            let dy = ys.iter().cloned().fold(f32::NEG_INFINITY, f32::max)
-                - ys.iter().cloned().fold(f32::INFINITY, f32::min);
+            let dx = xs.iter().copied().fold(f32::NEG_INFINITY, f32::max)
+                - xs.iter().copied().fold(f32::INFINITY, f32::min);
+            let dy = ys.iter().copied().fold(f32::NEG_INFINITY, f32::max)
+                - ys.iter().copied().fold(f32::INFINITY, f32::min);
             dx.max(dy) > MIN_SIZE
         });
 
@@ -209,12 +209,10 @@ mod tests {
 
     #[test]
     fn recognize_one_descarta_una_caja_con_relacion_de_aspecto_extrema() {
-        // Antes: sin `MAX_BUCKET_WIDTH`, una caja casi degenerada (acá: 4px
-        // de ancho por 2000px de alto, alcanzable desde un detector
-        // corriendo sobre una imagen de terceros no confiable) producía un
-        // `bucket_width` de miles de columnas y un tensor/inferencia
-        // proporcionalmente desproporcionados. Se prueba `recognize_one`
-        // directo (sin pasar por `detect`) para no depender de que el
+        // Sin `MAX_BUCKET_WIDTH`, una caja casi degenerada (acá 4px de ancho
+        // por 2000px de alto, alcanzable desde una imagen no confiable) da un
+        // `bucket_width` de miles de columnas y un tensor desproporcionado.
+        // Se prueba `recognize_one` directo para no depender de que el
         // detector real produzca esa geometría exacta.
         let mut reader = Reader::new(modelo("craft_detector.onnx"), modelo("recognizer_latin_g2.onnx"))
             .expect("carga reader");
