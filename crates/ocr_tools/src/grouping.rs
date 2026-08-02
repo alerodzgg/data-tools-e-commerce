@@ -22,16 +22,50 @@ struct RawBox {
     height: f32,
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Umbrales de agrupación, todos relativos (fracción de la altura o el ancho
+/// de la caja), salvo `slope_ths` que es una pendiente absoluta.
+///
+/// Van juntos en un struct y no como cinco `f32` sueltos porque son
+/// indistinguibles entre sí para el compilador: pasarlos en otro orden
+/// compila igual y cambia el resultado del agrupado en silencio.
+#[derive(Debug, Clone, Copy)]
+pub struct Umbrales {
+    /// Pendiente máxima para considerar una caja "horizontal".
+    pub slope_ths: f32,
+    /// Separación vertical máxima entre centros para fundir dos cajas.
+    pub ycenter_ths: f32,
+    /// Diferencia de altura máxima para fundir dos cajas.
+    pub height_ths: f32,
+    /// Separación horizontal máxima para fundir dos cajas.
+    pub width_ths: f32,
+    /// Margen que se agrega alrededor de la caja ya fusionada.
+    pub add_margin: f32,
+}
+
+impl Default for Umbrales {
+    fn default() -> Self {
+        Self {
+            slope_ths: 0.1,
+            ycenter_ths: 0.5,
+            height_ths: 0.5,
+            width_ths: 0.5,
+            add_margin: 0.1,
+        }
+    }
+}
+
 pub fn group_text_box(
     polys: &[TextBox],
-    slope_ths: f32,
-    ycenter_ths: f32,
-    height_ths: f32,
-    width_ths: f32,
-    add_margin: f32,
+    umbrales: Umbrales,
     sort_output: bool,
 ) -> (Vec<HorizontalBox>, Vec<FreeBox>) {
+    let Umbrales {
+        slope_ths,
+        ycenter_ths,
+        height_ths,
+        width_ths,
+        add_margin,
+    } = umbrales;
     let mut horizontal_list: Vec<RawBox> = Vec::new();
     let mut free_list: Vec<FreeBox> = Vec::new();
 
@@ -207,7 +241,7 @@ mod tests {
     #[test]
     fn una_caja_horizontal_simple_recibe_margen() {
         let polys = vec![caja(10.0, 10.0, 60.0, 30.0)];
-        let (horiz, free) = group_text_box(&polys, 0.1, 0.5, 0.5, 0.5, 0.1, true);
+        let (horiz, free) = group_text_box(&polys, Umbrales::default(), true);
         assert!(free.is_empty());
         assert_eq!(horiz.len(), 1);
         // margen = int(0.1*min(50,20)) = int(2.0) = 2
@@ -217,7 +251,7 @@ mod tests {
     #[test]
     fn dos_cajas_en_la_misma_linea_se_funden() {
         let polys = vec![caja(0.0, 10.0, 40.0, 30.0), caja(45.0, 10.0, 90.0, 30.0)];
-        let (horiz, _free) = group_text_box(&polys, 0.1, 0.5, 0.5, 0.5, 0.1, true);
+        let (horiz, _free) = group_text_box(&polys, Umbrales::default(), true);
         assert_eq!(horiz.len(), 1);
         assert_eq!(horiz[0][0], -2.0); // x_min=0, margen=int(0.1*min(90,20))=2
         assert_eq!(horiz[0][1], 92.0); // x_max=90+2
@@ -226,7 +260,7 @@ mod tests {
     #[test]
     fn dos_cajas_en_lineas_distintas_no_se_funden() {
         let polys = vec![caja(0.0, 10.0, 40.0, 30.0), caja(0.0, 200.0, 40.0, 220.0)];
-        let (horiz, _free) = group_text_box(&polys, 0.1, 0.5, 0.5, 0.5, 0.1, true);
+        let (horiz, _free) = group_text_box(&polys, Umbrales::default(), true);
         assert_eq!(horiz.len(), 2);
     }
 
@@ -237,7 +271,7 @@ mod tests {
         // misma línea ejercitan el `sort_by` de `y_center` y, al fusionarse,
         // el de `x_min`.
         let polys = vec![caja(f32::NAN, 10.0, 40.0, 30.0), caja(45.0, 10.0, 90.0, 30.0)];
-        let (_horiz, _free) = group_text_box(&polys, 0.1, 0.5, 0.5, 0.5, 0.1, true);
+        let (_horiz, _free) = group_text_box(&polys, Umbrales::default(), true);
     }
 
     #[test]
@@ -249,7 +283,7 @@ mod tests {
             BoxPoint { x: 45.0, y: 5.0 },
             BoxPoint { x: 5.0, y: 55.0 },
         ]];
-        let (horiz, free) = group_text_box(&polys, 0.1, 0.5, 0.5, 0.5, 0.1, true);
+        let (horiz, free) = group_text_box(&polys, Umbrales::default(), true);
         assert!(horiz.is_empty());
         assert_eq!(free.len(), 1);
     }

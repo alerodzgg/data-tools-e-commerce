@@ -7,6 +7,7 @@ use polars::prelude::*;
 use crate::coincidencia_parcial::rellenar_texto;
 use crate::duplicados::clave_limpia_de;
 use crate::escritor::nuevo_escritor;
+use crate::fuente::Fuente;
 use crate::lectura::{
     columna_texto_o_vacia, con_clave_normalizada, iter_hojas_valores, preparar_chunk_clave,
 };
@@ -121,19 +122,21 @@ pub fn renombrar_traidas(
 /// temporal rancio de una corrida anterior interrumpida). Quien vaya a
 /// sobrescribir el archivo original con el resultado DEBE usar esta ruta,
 /// nunca `ruta_salida` directamente.
-#[allow(clippy::too_many_arguments)]
 pub fn buscarv(
-    base: &Path,
-    cols_base: &[String],
-    clave_base: &str,
+    fuente: &Fuente,
     lookup: &DataFrame,
     salida_traer: &[String],
-    excluir_base: Option<&[&str]>,
     solo_match: bool,
     ruta_salida: &Path,
     avisar: impl FnMut(&str),
     mut progreso: impl FnMut(u64),
 ) -> CoreResult<(usize, u64, u64, RutaEscritaReal)> {
+    let Fuente {
+        archivo: base,
+        columnas: cols_base,
+        columna_clave: clave_base,
+        excluir: excluir_base,
+    } = *fuente;
     let mut columnas_salida = salida_traer.to_vec();
     columnas_salida.extend(cols_base.iter().cloned());
 
@@ -265,11 +268,7 @@ mod tests {
 
         let tabla = cargar_tabla_busqueda(&archivo, "Clave", &["Info".to_string()], false, None, |_| {})?;
         assert_eq!(tabla.height(), 2);
-        let fila_k1 = tabla
-            .clone()
-            .lazy()
-            .filter(col("clave_limpia").eq(lit("k1")))
-            .collect()?;
+        let fila_k1 = tabla.lazy().filter(col("clave_limpia").eq(lit("k1"))).collect()?;
         assert_eq!(fila_k1.column("Info")?.str()?.get(0), Some("primero"));
         Ok(())
     }
@@ -303,12 +302,14 @@ mod tests {
 
         let ruta_salida = tmp.path().join("out.xlsx");
         let (total, filas_match, filas_total, ruta_real) = buscarv(
-            &base_archivo,
-            &cols_base,
-            "Clave",
+            &Fuente {
+                archivo: &base_archivo,
+                columnas: &cols_base,
+                columna_clave: "Clave",
+                excluir: None,
+            },
             &lookup,
             &salida_traer,
-            None,
             false,
             &ruta_salida,
             |_| {},
@@ -366,12 +367,14 @@ mod tests {
         std::fs::write(&ruta_pedida, b"basura de una corrida anterior interrumpida").unwrap();
 
         let (total, _filas_match, _filas_total, ruta_real) = buscarv(
-            &base_archivo,
-            &cols_base,
-            "Clave",
+            &Fuente {
+                archivo: &base_archivo,
+                columnas: &cols_base,
+                columna_clave: "Clave",
+                excluir: None,
+            },
             &lookup,
             &salida_traer,
-            None,
             false,
             &ruta_pedida,
             |_| {},

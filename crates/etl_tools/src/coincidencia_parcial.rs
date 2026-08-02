@@ -277,42 +277,47 @@ pub(crate) fn rellenar_texto(df: &mut DataFrame, columnas: &[String]) -> CoreRes
 /// resultado se reparte con un join; si casi todo es distinto, opera fila a
 /// fila. Ambos caminos deben dar EXACTAMENTE el mismo resultado (verificado
 /// por test): la deduplicación es solo una optimización.
+/// Contra qué se cruza: la tabla de búsqueda ya cargada, su autómata y qué
+/// traer de ella. Los cinco viajan siempre juntos y describen una sola cosa,
+/// así que van agrupados en vez de sueltos.
+pub struct Busqueda<'a> {
+    /// Tabla de búsqueda ya normalizada (`cargar_tabla_parcial`).
+    pub lookup: &'a DataFrame,
+    /// Autómata construido sobre sus claves (`construir_automata`).
+    pub ac: &'a AhoCorasick,
+    /// Claves en su forma original, para reportar la coincidencia.
+    pub claves_originales: &'a [String],
+    /// Columnas de la tabla que se traen a la salida.
+    pub salida_traer: &'a [String],
+    /// Qué hacer si varias claves coinciden en el mismo texto.
+    pub opcion: OpcionMultiple,
+}
+
 pub fn cruzar_chunk_parcial(
     chunk: &DataFrame,
     clave_base: &str,
-    lookup: &DataFrame,
-    ac: &AhoCorasick,
-    claves_originales: &[String],
-    salida_traer: &[String],
-    opcion: OpcionMultiple,
+    busqueda: &Busqueda,
 ) -> CoreResult<(DataFrame, usize)> {
-    cruzar_chunk_parcial_con_umbral(
-        chunk,
-        clave_base,
-        lookup,
-        ac,
-        claves_originales,
-        salida_traer,
-        opcion,
-        UMBRAL_DEDUP_PARCIAL,
-    )
+    cruzar_chunk_parcial_con_umbral(chunk, clave_base, busqueda, UMBRAL_DEDUP_PARCIAL)
 }
 
 /// Igual que [`cruzar_chunk_parcial`], pero con el umbral de deduplicación
 /// adaptativa como parámetro explícito (en vez de una constante de módulo
 /// mutable): permite forzar cada camino (directo / con dedup) desde los
 /// tests sin estado global compartido.
-#[allow(clippy::too_many_arguments)]
 pub fn cruzar_chunk_parcial_con_umbral(
     chunk: &DataFrame,
     clave_base: &str,
-    lookup: &DataFrame,
-    ac: &AhoCorasick,
-    claves_originales: &[String],
-    salida_traer: &[String],
-    opcion: OpcionMultiple,
+    busqueda: &Busqueda,
     umbral_dedup: f64,
 ) -> CoreResult<(DataFrame, usize)> {
+    let Busqueda {
+        lookup,
+        ac,
+        claves_originales,
+        salida_traer,
+        opcion,
+    } = *busqueda;
     let textos_base: Vec<Option<String>> = columna_texto_o_vacia(chunk, clave_base)?;
     let n = textos_base.len();
     let crudos: Vec<String> = textos_base
@@ -461,7 +466,6 @@ mod tests {
         let tabla = cargar_tabla_parcial(&archivo, "Clave", &["Info".to_string()], false, None, |_| {})?;
         assert_eq!(tabla.height(), 2);
         let fila = tabla
-            .clone()
             .lazy()
             .filter(col("clave_norm").eq(lit("hola mundo")))
             .collect()?;
@@ -540,11 +544,13 @@ mod tests {
         let (salida, _) = cruzar_chunk_parcial(
             &base,
             "Texto",
-            &lookup,
-            &ac,
-            &claves,
-            &["Info".to_string()],
-            OpcionMultiple::Larga,
+            &Busqueda {
+                lookup: &lookup,
+                ac: &ac,
+                claves_originales: &claves,
+                salida_traer: &["Info".to_string()],
+                opcion: OpcionMultiple::Larga,
+            },
         )?;
         let info: Vec<_> = salida
             .column("Info")?
@@ -587,21 +593,25 @@ mod tests {
             let (d1, m1) = cruzar_chunk_parcial_con_umbral(
                 &chunk,
                 "Texto",
-                &lookup,
-                &ac,
-                &claves,
-                &["Info".to_string()],
-                opcion,
+                &Busqueda {
+                    lookup: &lookup,
+                    ac: &ac,
+                    claves_originales: &claves,
+                    salida_traer: &["Info".to_string()],
+                    opcion,
+                },
                 -1.0, // fuerza camino directo
             )?;
             let (d2, m2) = cruzar_chunk_parcial_con_umbral(
                 &chunk,
                 "Texto",
-                &lookup,
-                &ac,
-                &claves,
-                &["Info".to_string()],
-                opcion,
+                &Busqueda {
+                    lookup: &lookup,
+                    ac: &ac,
+                    claves_originales: &claves,
+                    salida_traer: &["Info".to_string()],
+                    opcion,
+                },
                 2.0, // fuerza camino con dedup
             )?;
             assert_eq!(m1, m2, "opcion={opcion:?}");
@@ -627,11 +637,13 @@ mod tests {
             let (salida, _) = cruzar_chunk_parcial(
                 &base,
                 "Texto",
-                &lookup,
-                &ac,
-                &claves,
-                &["Info".to_string()],
-                OpcionMultiple::Larga,
+                &Busqueda {
+                    lookup: &lookup,
+                    ac: &ac,
+                    claves_originales: &claves,
+                    salida_traer: &["Info".to_string()],
+                    opcion: OpcionMultiple::Larga,
+                },
             )?;
             for v in salida.column("Info")?.str()?.iter().flatten() {
                 vistos.insert(v.to_string());

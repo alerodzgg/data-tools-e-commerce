@@ -24,7 +24,7 @@ pub fn palabras_borradas() -> Vec<String> {
             salida.push(palabra);
         }
     };
-    for &p in PALABRAS_BASE {
+    for &p in PALABRAS_BASE.iter() {
         agregar(p.to_string());
     }
     for &p in PALABRAS_CRITICAS {

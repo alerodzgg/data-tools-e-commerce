@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use app_shell::{FlujoError, FlujoResult};
-use ocr_tools::async_processor::AsyncBatchProcessor;
+use ocr_tools::async_processor::{AsyncBatchProcessor, Bloque, Motor, Persistencia};
 use ocr_tools::checkpoint_store::CheckpointStore;
 use ocr_tools::downloader::DownloadConfig;
 use ocr_tools::file_workflow::{self, columnas_reservadas_en_choque};
@@ -223,13 +223,19 @@ async fn ejecutar_archivo(
             );
             let outcome = procesador
                 .process(
-                    &bloque,
-                    &url_columns,
-                    pipeline.clone(),
-                    reader.as_deref_mut(),
-                    checkpoint.clone(),
-                    &cached,
-                    offset,
+                    Bloque {
+                        df: &bloque,
+                        url_columns: &url_columns,
+                        idx_offset: offset,
+                    },
+                    Motor {
+                        pipeline: pipeline.clone(),
+                        reader: reader.as_deref_mut(),
+                    },
+                    Persistencia {
+                        checkpoint: checkpoint.clone(),
+                        cached: &cached,
+                    },
                     |n| barra.inc(n),
                     app_shell::warn,
                 )

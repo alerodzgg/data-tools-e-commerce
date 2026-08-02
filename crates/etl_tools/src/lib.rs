@@ -34,13 +34,14 @@ pub mod constantes;
 pub mod duplicados;
 pub mod encontrar;
 pub mod escritor;
+pub mod fuente;
 pub mod lectura;
 
 pub use borrado::{generar_reporte_cambios, procesar_columnas_con_desplazamiento};
 pub use buscarv::{buscarv, cargar_tabla_busqueda, renombrar_traidas};
 pub use caracteres::{anadir_columna_y_ordenar, contar_caracteres, dividir_dentro_fuera};
 pub use coincidencia_parcial::{
-    cargar_tabla_parcial, construir_automata, cruzar_chunk_parcial, norm_parcial, OpcionMultiple,
+    cargar_tabla_parcial, construir_automata, cruzar_chunk_parcial, norm_parcial, Busqueda, OpcionMultiple,
 };
 pub use constantes::columnas_reservadas_presentes;
 pub use duplicados::{
@@ -48,6 +49,7 @@ pub use duplicados::{
 };
 pub use encontrar::{lookup_palabras, palabras_de_xlsx};
 pub use escritor::nuevo_escritor;
+pub use fuente::Fuente;
 pub use lectura::{iter_hojas_valores, preparar_chunk, preparar_chunk_clave};
 
 // Reexportado para que las herramientas que dependan de este crate no

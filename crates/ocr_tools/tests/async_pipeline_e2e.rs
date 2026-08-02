@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use ocr_tools::async_processor::AsyncBatchProcessor;
+use ocr_tools::async_processor::{AsyncBatchProcessor, Bloque, Motor, Persistencia};
 use ocr_tools::checkpoint_store::CheckpointStore;
 use ocr_tools::downloader::DownloadConfig;
 use ocr_tools::pipeline::{DetectorToggles, ImagePipeline, PipelineConfig};
@@ -82,13 +82,19 @@ async fn pipeline_async_completo_rechaza_el_placeholder_via_ocr_real() {
 
     let outcome = procesador
         .process(
-            &df,
-            &url_columns,
-            pipeline,
-            Some(&mut reader),
-            checkpoint,
-            &cached,
-            0,
+            Bloque {
+                df: &df,
+                url_columns: &url_columns,
+                idx_offset: 0,
+            },
+            Motor {
+                pipeline,
+                reader: Some(&mut reader),
+            },
+            Persistencia {
+                checkpoint,
+                cached: &cached,
+            },
             |_| {},
             |_| {},
         )

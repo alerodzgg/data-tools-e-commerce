@@ -203,9 +203,9 @@ mod tests {
     fn lotes_csv_no_pierde_filas_con_saltos_de_linea() -> CoreResult<()> {
         let tmp = tempfile::tempdir().unwrap();
         let ruta = tmp.path().join("d.csv");
-        let df = df!("A" => ["uno", "dos\ncon salto", "tres"], "B" => ["1", "2", "3"])?;
+        let mut df = df!("A" => ["uno", "dos\ncon salto", "tres"], "B" => ["1", "2", "3"])?;
         let mut archivo = File::create(&ruta)?;
-        CsvWriter::new(&mut archivo).finish(&mut df.clone())?;
+        CsvWriter::new(&mut archivo).finish(&mut df)?;
 
         let lotes: Vec<DataFrame> =
             LotesCsv::abrir(&ruta, UmbralesLoteCsv::default())?.collect::<CoreResult<_>>()?;
@@ -250,9 +250,9 @@ mod tests {
     fn lotes_csv_no_convierte_codigos_en_numeros() -> CoreResult<()> {
         let tmp = tempfile::tempdir().unwrap();
         let ruta = tmp.path().join("c.csv");
-        let df = df!("C" => ["007", "1e5"])?;
+        let mut df = df!("C" => ["007", "1e5"])?;
         let mut archivo = File::create(&ruta)?;
-        CsvWriter::new(&mut archivo).finish(&mut df.clone())?;
+        CsvWriter::new(&mut archivo).finish(&mut df)?;
 
         let lotes: Vec<DataFrame> =
             LotesCsv::abrir(&ruta, UmbralesLoteCsv::default())?.collect::<CoreResult<_>>()?;

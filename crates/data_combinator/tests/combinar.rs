@@ -19,32 +19,11 @@ fn escribir_csv(ruta: &Path, df: &DataFrame) {
     CsvWriter::new(&mut archivo).finish(&mut df.clone()).unwrap();
 }
 
-#[allow(clippy::too_many_arguments)]
-fn combinar_una(
-    archivos: &[PathBuf],
-    columnas: &[String],
-    hojas_excluir: &[String],
-    formato: Formato,
-    columna_orden: Option<&str>,
-    ascendente: bool,
-    nombre_salida: &str,
-    ruta_salida: &Path,
-    umbrales_orden: UmbralesOrden,
-) -> (PathBuf, usize) {
-    let opciones = OpcionesCombinar {
-        archivos,
-        columnas,
-        hojas_excluir,
-        formato,
-        columna_orden,
-        ascendente,
-        nombre_salida,
-        ruta_salida,
-        division: Division::Ninguna,
-        umbrales_orden,
-        umbrales_lote_csv: UmbralesLoteCsv::default(),
-    };
-    let (rutas, n) = combinar(&opciones, |_| {}, |_| {}).unwrap();
+/// Combina esperando UNA sola ruta de salida. Recibe las opciones ya armadas:
+/// con los campos sueltos, un `true` posicional en el sitio de llamada no
+/// dice cuál de los dos booleanos es.
+fn combinar_una(opciones: &OpcionesCombinar) -> (PathBuf, usize) {
+    let (rutas, n) = combinar(opciones, |_| {}, |_| {}).unwrap();
     assert_eq!(rutas.len(), 1, "se esperaba 1 ruta, hay {}", rutas.len());
     (rutas[0].clone(), n)
 }
@@ -79,28 +58,32 @@ fn orden_igual_en_memoria_y_en_disco() {
     let cols = columnas(&["Clave", "Id"]);
     let excluir = Vec::new();
 
-    let (ruta_mem, _) = combinar_una(
-        &fuentes,
-        &cols,
-        &excluir,
-        Formato::Csv,
-        Some("Clave"),
-        true,
-        "o_memoria",
-        tmp.path(),
-        UmbralesOrden::forzar_memoria(),
-    );
-    let (ruta_disco, _) = combinar_una(
-        &fuentes,
-        &cols,
-        &excluir,
-        Formato::Csv,
-        Some("Clave"),
-        true,
-        "o_disco",
-        tmp.path(),
-        UmbralesOrden::forzar_disco(),
-    );
+    let (ruta_mem, _) = combinar_una(&OpcionesCombinar {
+        archivos: &fuentes,
+        columnas: &cols,
+        hojas_excluir: &excluir,
+        formato: Formato::Csv,
+        columna_orden: Some("Clave"),
+        ascendente: true,
+        nombre_salida: "o_memoria",
+        ruta_salida: tmp.path(),
+        division: Division::Ninguna,
+        umbrales_orden: UmbralesOrden::forzar_memoria(),
+        umbrales_lote_csv: UmbralesLoteCsv::default(),
+    });
+    let (ruta_disco, _) = combinar_una(&OpcionesCombinar {
+        archivos: &fuentes,
+        columnas: &cols,
+        hojas_excluir: &excluir,
+        formato: Formato::Csv,
+        columna_orden: Some("Clave"),
+        ascendente: true,
+        nombre_salida: "o_disco",
+        ruta_salida: tmp.path(),
+        division: Division::Ninguna,
+        umbrales_orden: UmbralesOrden::forzar_disco(),
+        umbrales_lote_csv: UmbralesLoteCsv::default(),
+    });
 
     assert_eq!(
         leer_columna_csv(&ruta_mem, "Id"),
@@ -123,28 +106,32 @@ fn desempate_numerico_por_texto() {
     let cols = columnas(&["Clave", "Id"]);
     let excluir = Vec::new();
 
-    let (ruta_mem, _) = combinar_una(
-        &fuentes,
-        &cols,
-        &excluir,
-        Formato::Csv,
-        Some("Clave"),
-        true,
-        "d_memoria",
-        tmp.path(),
-        UmbralesOrden::forzar_memoria(),
-    );
-    let (ruta_disco, _) = combinar_una(
-        &fuentes,
-        &cols,
-        &excluir,
-        Formato::Csv,
-        Some("Clave"),
-        true,
-        "d_disco",
-        tmp.path(),
-        UmbralesOrden::forzar_disco(),
-    );
+    let (ruta_mem, _) = combinar_una(&OpcionesCombinar {
+        archivos: &fuentes,
+        columnas: &cols,
+        hojas_excluir: &excluir,
+        formato: Formato::Csv,
+        columna_orden: Some("Clave"),
+        ascendente: true,
+        nombre_salida: "d_memoria",
+        ruta_salida: tmp.path(),
+        division: Division::Ninguna,
+        umbrales_orden: UmbralesOrden::forzar_memoria(),
+        umbrales_lote_csv: UmbralesLoteCsv::default(),
+    });
+    let (ruta_disco, _) = combinar_una(&OpcionesCombinar {
+        archivos: &fuentes,
+        columnas: &cols,
+        hojas_excluir: &excluir,
+        formato: Formato::Csv,
+        columna_orden: Some("Clave"),
+        ascendente: true,
+        nombre_salida: "d_disco",
+        ruta_salida: tmp.path(),
+        division: Division::Ninguna,
+        umbrales_orden: UmbralesOrden::forzar_disco(),
+        umbrales_lote_csv: UmbralesLoteCsv::default(),
+    });
 
     assert_eq!(
         leer_columna_csv(&ruta_mem, "Id"),
@@ -214,28 +201,32 @@ fn fuzzer_memoria_vs_mezcla_externa() {
             let cols = columnas(&["Clave", "Id"]);
             let excluir = Vec::new();
 
-            let (r1, _) = combinar_una(
-                &fuentes,
-                &cols,
-                &excluir,
-                Formato::Csv,
-                Some("Clave"),
+            let (r1, _) = combinar_una(&OpcionesCombinar {
+                archivos: &fuentes,
+                columnas: &cols,
+                hojas_excluir: &excluir,
+                formato: Formato::Csv,
+                columna_orden: Some("Clave"),
                 ascendente,
-                "mem",
-                tmp.path(),
-                UmbralesOrden::forzar_memoria(),
-            );
-            let (r2, _) = combinar_una(
-                &fuentes,
-                &cols,
-                &excluir,
-                Formato::Csv,
-                Some("Clave"),
+                nombre_salida: "mem",
+                ruta_salida: tmp.path(),
+                division: Division::Ninguna,
+                umbrales_orden: UmbralesOrden::forzar_memoria(),
+                umbrales_lote_csv: UmbralesLoteCsv::default(),
+            });
+            let (r2, _) = combinar_una(&OpcionesCombinar {
+                archivos: &fuentes,
+                columnas: &cols,
+                hojas_excluir: &excluir,
+                formato: Formato::Csv,
+                columna_orden: Some("Clave"),
                 ascendente,
-                "dis",
-                tmp.path(),
-                UmbralesOrden::forzar_disco(),
-            );
+                nombre_salida: "dis",
+                ruta_salida: tmp.path(),
+                division: Division::Ninguna,
+                umbrales_orden: UmbralesOrden::forzar_disco(),
+                umbrales_lote_csv: UmbralesLoteCsv::default(),
+            });
 
             let en_memoria = leer_columna_csv(&r1, "Id");
             let en_disco = leer_columna_csv(&r2, "Id");
@@ -262,17 +253,19 @@ fn presupuesto_trocea_el_chunk() {
         celdas_por_run: 2000,
         filas_min_run: 1000,
     };
-    let (ruta, _) = combinar_una(
-        &[origen],
-        &cols,
-        &excluir,
-        Formato::Csv,
-        Some("Clave"),
-        true,
-        "runs",
-        tmp.path(),
-        umbrales,
-    );
+    let (ruta, _) = combinar_una(&OpcionesCombinar {
+        archivos: &[origen],
+        columnas: &cols,
+        hojas_excluir: &excluir,
+        formato: Formato::Csv,
+        columna_orden: Some("Clave"),
+        ascendente: true,
+        nombre_salida: "runs",
+        ruta_salida: tmp.path(),
+        division: Division::Ninguna,
+        umbrales_orden: umbrales,
+        umbrales_lote_csv: UmbralesLoteCsv::default(),
+    });
 
     let salida = leer_columna_csv(&ruta, "Clave");
     let mut esperado = claves;
@@ -305,17 +298,19 @@ fn combina_sin_ordenar_rellenando_faltantes() {
         vec!["A".to_string(), "B".to_string(), "C".to_string()]
     );
 
-    let (ruta, n) = combinar_una(
-        &fuentes,
-        &columnas_union,
-        &[],
-        Formato::Csv,
-        None,
-        true,
-        "e2e",
-        tmp.path(),
-        UmbralesOrden::default(),
-    );
+    let (ruta, n) = combinar_una(&OpcionesCombinar {
+        archivos: &fuentes,
+        columnas: &columnas_union,
+        hojas_excluir: &[],
+        formato: Formato::Csv,
+        columna_orden: None,
+        ascendente: true,
+        nombre_salida: "e2e",
+        ruta_salida: tmp.path(),
+        division: Division::Ninguna,
+        umbrales_orden: UmbralesOrden::default(),
+        umbrales_lote_csv: UmbralesLoteCsv::default(),
+    });
     assert_eq!(n, 3);
     assert_eq!(leer_columna_csv(&ruta, "C"), vec!["", "", "z"]);
 }
@@ -330,17 +325,19 @@ fn xlsx_vacios_al_final_y_orden_numerico() {
             &df!("K" => ["b", "", "a", "10", "2"], "Id" => ["1", "2", "3", "4", "5"]).unwrap(),
         );
         let cols = columnas(&["K", "Id"]);
-        let (ruta, _) = combinar_una(
-            &[origen],
-            &cols,
-            &[],
-            Formato::Xlsx,
-            Some("K"),
+        let (ruta, _) = combinar_una(&OpcionesCombinar {
+            archivos: &[origen],
+            columnas: &cols,
+            hojas_excluir: &[],
+            formato: Formato::Xlsx,
+            columna_orden: Some("K"),
             ascendente,
-            "x",
-            tmp.path(),
-            UmbralesOrden::default(),
-        );
+            nombre_salida: "x",
+            ruta_salida: tmp.path(),
+            division: Division::Ninguna,
+            umbrales_orden: UmbralesOrden::default(),
+            umbrales_lote_csv: UmbralesLoteCsv::default(),
+        });
 
         let hojas = commerce_core::iter_hojas_xlsx(&ruta, None, |_| {});
         let hoja = &hojas[0];

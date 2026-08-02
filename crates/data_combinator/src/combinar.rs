@@ -234,19 +234,27 @@ fn leer_fila(lector: &mut csv::Reader<File>, ancho: usize) -> CoreResult<Option<
 /// sort): genera runs ya ordenados —volcados a CSV temporal— y los fusiona
 /// en streaming con un montículo k-vías. La memoria queda plana a cualquier
 /// escala. Si todo cabe en un único run, ordena en memoria sin tocar el disco.
-#[allow(clippy::too_many_arguments)]
+/// Orden global por `columna_orden` con mezcla externa en disco. Recibe las
+/// `opciones` completas en vez de sus campos sueltos: el llamador ya las
+/// tiene armadas y explotarlas solo abría la puerta a cruzarlas entre sí.
+/// `columnas` y `columna_orden` van aparte porque llegan ya resueltos (la
+/// unión efectiva de columnas, y el nombre ya desempaquetado del `Option`).
 fn ordenar_y_escribir(
-    archivos: &[PathBuf],
+    opciones: &OpcionesCombinar,
     columnas: &[String],
-    hojas_excluir: &[String],
     columna_orden: &str,
-    ascendente: bool,
-    umbrales_orden: UmbralesOrden,
-    umbrales_lote_csv: UmbralesLoteCsv,
     escribir: &mut dyn FnMut(&DataFrame) -> CoreResult<()>,
     mut avisar: impl FnMut(&str),
     mut progreso: impl FnMut(u64),
 ) -> CoreResult<()> {
+    let OpcionesCombinar {
+        archivos,
+        hojas_excluir,
+        ascendente,
+        umbrales_orden,
+        umbrales_lote_csv,
+        ..
+    } = *opciones;
     let idx = columnas
         .iter()
         .position(|c| c == columna_orden)
@@ -262,10 +270,10 @@ fn ordenar_y_escribir(
     let volcar_run =
         |buffer: &mut Vec<DataFrame>, alto: &mut usize, runs: &mut Vec<PathBuf>| -> CoreResult<()> {
             let concatenado = concatenar_vertical(std::mem::take(buffer))?;
-            let ordenado = ordenar_excel_df(&concatenado, columna_orden, ascendente)?;
+            let mut ordenado = ordenar_excel_df(&concatenado, columna_orden, ascendente)?;
             let ruta_run = tmpdir.path().join(format!("run_{}.csv", runs.len()));
             let mut archivo = File::create(&ruta_run)?;
-            CsvWriter::new(&mut archivo).finish(&mut ordenado.clone())?;
+            CsvWriter::new(&mut archivo).finish(&mut ordenado)?;
             runs.push(ruta_run);
             *alto = 0;
             Ok(())
@@ -437,13 +445,9 @@ pub fn combinar(
         if let Some(columna_orden) = opciones.columna_orden {
             let mut escribir = |df: &DataFrame| escribir_uno(df, &mut salida);
             ordenar_y_escribir(
-                opciones.archivos,
+                opciones,
                 &columnas,
-                opciones.hojas_excluir,
                 columna_orden,
-                opciones.ascendente,
-                opciones.umbrales_orden,
-                opciones.umbrales_lote_csv,
                 &mut escribir,
                 &mut avisar,
                 &mut progreso,

@@ -23,11 +23,13 @@ const MAG_RATIO: f32 = 1.0;
 const TEXT_THRESHOLD: f32 = 0.7;
 const LINK_THRESHOLD: f32 = 0.4;
 const LOW_TEXT: f32 = 0.4;
-const SLOPE_THS: f32 = 0.1;
-const YCENTER_THS: f32 = 0.5;
-const HEIGHT_THS: f32 = 0.5;
-const WIDTH_THS: f32 = 0.5;
-const ADD_MARGIN: f32 = 0.1;
+const UMBRALES_AGRUPACION: crate::grouping::Umbrales = crate::grouping::Umbrales {
+    slope_ths: 0.1,
+    ycenter_ths: 0.5,
+    height_ths: 0.5,
+    width_ths: 0.5,
+    add_margin: 0.1,
+};
 const MIN_SIZE: f32 = 20.0;
 const MODEL_HEIGHT: u32 = 64;
 
@@ -121,15 +123,7 @@ impl Reader {
             })
             .collect();
 
-        let (mut horizontal, mut free) = group_text_box(
-            &boxes,
-            SLOPE_THS,
-            YCENTER_THS,
-            HEIGHT_THS,
-            WIDTH_THS,
-            ADD_MARGIN,
-            true,
-        );
+        let (mut horizontal, mut free) = group_text_box(&boxes, UMBRALES_AGRUPACION, true);
 
         horizontal.retain(|b| (b[1] - b[0]).max(b[3] - b[2]) > MIN_SIZE);
         free.retain(|q| {

@@ -144,6 +144,33 @@ impl OcrBatcher {
     }
 }
 
+/// El tramo de datos a analizar y su posición dentro del archivo completo.
+///
+/// Las hojas se procesan de a una, pero el checkpoint indexa por fila del
+/// archivo entero: `idx_offset` es lo que traduce entre ambas numeraciones.
+/// Va junto a `df`/`url_columns` porque desacoplarlos permite pasar el
+/// offset de otra hoja sin que nada lo detecte.
+pub struct Bloque<'a> {
+    pub df: &'a DataFrame,
+    pub url_columns: &'a [String],
+    pub idx_offset: i64,
+}
+
+/// El motor de análisis: detectores CPU y, si está configurada, la etapa OCR.
+///
+/// `reader` debe venir `Some` cuando `pipeline.has_slow_stage()`; van juntos
+/// para que esa correlación quede a la vista en un solo lugar.
+pub struct Motor<'a> {
+    pub pipeline: Arc<ImagePipeline>,
+    pub reader: Option<&'a mut Reader>,
+}
+
+/// Qué se sabe ya de corridas anteriores y dónde se persiste lo nuevo.
+pub struct Persistencia<'a> {
+    pub checkpoint: Arc<CheckpointStore>,
+    pub cached: &'a HashMap<(i64, String), CheckpointEntry>,
+}
+
 // ════════════════════════════════════════════════════════════════════════
 // AsyncBatchProcessor
 // ════════════════════════════════════════════════════════════════════════
@@ -344,19 +371,20 @@ impl AsyncBatchProcessor {
     /// de progreso real, no solo "hoja completada". `avisar` recibe mensajes
     /// no fatales (p. ej. un fallo de escritura del checkpoint no detiene el
     /// procesamiento, pero el usuario debe enterarse).
-    #[allow(clippy::too_many_arguments)]
     pub async fn process(
         &self,
-        df: &DataFrame,
-        url_columns: &[String],
-        pipeline: Arc<ImagePipeline>,
-        reader: Option<&mut Reader>,
-        checkpoint: Arc<CheckpointStore>,
-        cached: &HashMap<(i64, String), CheckpointEntry>,
-        idx_offset: i64,
+        bloque: Bloque<'_>,
+        motor: Motor<'_>,
+        persistencia: Persistencia<'_>,
         mut progreso: impl FnMut(u64),
         mut avisar: impl FnMut(&str),
     ) -> CoreResult<ProcessOutcome> {
+        let Bloque {
+            df,
+            url_columns,
+            idx_offset,
+        } = bloque;
+        let Persistencia { checkpoint, cached } = persistencia;
         let n = df.height() as i64;
         let tasks = pending_tasks(df, url_columns, cached, idx_offset)?;
 
@@ -380,16 +408,8 @@ impl AsyncBatchProcessor {
         progreso(results.len() as u64);
 
         if !tasks.is_empty() {
-            self.run_async(
-                tasks,
-                &mut results,
-                pipeline,
-                reader,
-                checkpoint,
-                &mut progreso,
-                &mut avisar,
-            )
-            .await;
+            self.run_async(tasks, &mut results, motor, checkpoint, &mut progreso, &mut avisar)
+                .await;
         }
 
         let imagenes_analizadas = results.len();
@@ -402,17 +422,16 @@ impl AsyncBatchProcessor {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn run_async(
         &self,
         tasks: Vec<CellTask>,
         results: &mut HashMap<(i64, String), CellResult>,
-        pipeline: Arc<ImagePipeline>,
-        reader: Option<&mut Reader>,
+        motor: Motor<'_>,
         checkpoint: Arc<CheckpointStore>,
         progreso: &mut dyn FnMut(u64),
         avisar: &mut dyn FnMut(&str),
     ) {
+        let Motor { pipeline, reader } = motor;
         if pipeline.has_slow_stage() && reader.is_none() {
             // Invariante violada: si el pipeline tiene etapa OCR configurada,
             // `reader` debe venir `Some` (lo garantiza hoy el único llamador
@@ -792,13 +811,19 @@ mod tests {
 
         let outcome = procesador
             .process(
-                &df,
-                &url_columns,
-                pipeline,
-                None,
-                checkpoint,
-                &cached,
-                0,
+                Bloque {
+                    df: &df,
+                    url_columns: &url_columns,
+                    idx_offset: 0,
+                },
+                Motor {
+                    pipeline,
+                    reader: None,
+                },
+                Persistencia {
+                    checkpoint,
+                    cached: &cached,
+                },
                 |_| {},
                 |_| {},
             )
@@ -847,13 +872,19 @@ mod tests {
         let avance_cb = avance.clone();
         let outcome = procesador
             .process(
-                &df,
-                &url_columns,
-                pipeline,
-                None,
-                checkpoint,
-                &HashMap::new(),
-                0,
+                Bloque {
+                    df: &df,
+                    url_columns: &url_columns,
+                    idx_offset: 0,
+                },
+                Motor {
+                    pipeline,
+                    reader: None,
+                },
+                Persistencia {
+                    checkpoint,
+                    cached: &HashMap::new(),
+                },
                 move |n| {
                     avance_cb.fetch_add(n, Ordering::SeqCst);
                 },
@@ -913,13 +944,19 @@ mod tests {
         let avisos_cb = avisos.clone();
         let _outcome = procesador
             .process(
-                &df,
-                &url_columns,
-                pipeline,
-                None,
-                checkpoint,
-                &HashMap::new(),
-                0,
+                Bloque {
+                    df: &df,
+                    url_columns: &url_columns,
+                    idx_offset: 0,
+                },
+                Motor {
+                    pipeline,
+                    reader: None,
+                },
+                Persistencia {
+                    checkpoint,
+                    cached: &HashMap::new(),
+                },
                 |_| {},
                 move |m: &str| avisos_cb.lock().unwrap().push(m.to_string()),
             )
@@ -974,13 +1011,19 @@ mod tests {
 
         let outcome = procesador
             .process(
-                &df,
-                &url_columns,
-                pipeline,
-                None,
-                checkpoint,
-                &HashMap::new(),
-                0,
+                Bloque {
+                    df: &df,
+                    url_columns: &url_columns,
+                    idx_offset: 0,
+                },
+                Motor {
+                    pipeline,
+                    reader: None,
+                },
+                Persistencia {
+                    checkpoint,
+                    cached: &HashMap::new(),
+                },
                 |_| {},
                 |_| {},
             )

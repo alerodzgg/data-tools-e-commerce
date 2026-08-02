@@ -1,0 +1,71 @@
+# Rangos de precio de compra (USD, límites inclusive) -> precio de lista.
+# Un tramo por línea: minimo,maximo,precio_de_lista
+# Se recorren EN ORDEN; el primer tramo que contiene el precio gana.
+#
+# ATENCIÓN — el tramo 175-189 no es monotónico y no está explicado:
+#   175-179 -> 16980, luego 180-184 -> 16195 (BAJA), luego 185-189 -> 16680.
+# En todo otro tramo el precio de lista sube o se mantiene al subir el rango
+# de compra; este es el único que no. Puede ser un ajuste puntual de margen o
+# un error de captura: no se modifica sin confirmación de negocio. El test
+# `tramo_175_189_mantiene_su_forma_no_monotonica_conocida` fija el
+# comportamiento vigente para que cambiarlo sea deliberado.
+1,14,5749
+15,19,6472
+20,24,7021
+25,29,7252
+30,39,7483
+40,44,7882
+45,49,8113
+50,54,8344
+55,59,8575
+60,64,8806
+65,69,9037
+70,74,9268
+75,79,9500
+80,84,9731
+85,89,9962
+90,94,10193
+95,99,10424
+100,109,10719
+110,119,11181
+120,129,11643
+130,139,12296
+140,149,12949
+150,159,13919
+160,164,14889
+165,169,15692
+170,174,16495
+175,179,16980
+180,184,16195
+185,189,16680
+190,199,17165
+200,224,18136
+225,249,19291
+250,274,20447
+275,299,21603
+300,324,22758
+325,349,24232
+350,374,25705
+375,399,27178
+400,424,28651
+425,449,30759
+450,474,32868
+475,499,34976
+500,524,37084
+525,549,39192
+550,574,41300
+575,599,43409
+600,624,45517
+625,649,47625
+650,699,49733
+700,724,52680
+725,749,54788
+750,799,56896
+800,824,59842
+825,849,61316
+850,874,62789
+875,899,64262
+900,924,65735
+925,949,67843
+950,999,69317
+1000,1025,71628

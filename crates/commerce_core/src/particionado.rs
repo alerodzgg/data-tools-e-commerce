@@ -172,7 +172,7 @@ mod tests {
         // dentro de un único `agregar()` de muchas filas.
         let mut acc = AcumuladorParticionado::nuevo(3, 2)?;
         let claves: Vec<String> = (0..50).map(|i| format!("k{i}")).collect();
-        acc.agregar(&df!("Clave" => claves.clone())?, "Clave")?;
+        acc.agregar(&df!("Clave" => claves)?, "Clave")?;
 
         let mut total = 0usize;
         acc.finalizar(|bucket| {
@@ -223,7 +223,7 @@ mod tests {
                 vistas.extend(columna_texto(&bucket, "Clave")?.into_iter().map(|v| v.unwrap_or_default()));
                 Ok(())
             }).unwrap();
-            let mut esperadas = claves.clone();
+            let mut esperadas = claves;
             esperadas.sort();
             vistas.sort();
             prop_assert_eq!(vistas, esperadas, "el multiset de claves debe preservarse exactamente");

@@ -175,11 +175,10 @@ fn ejecutar() -> AppResult<()> {
         return Ok(());
     };
     let columnas = match elegido.cual {
-        SeleccionColumnas::Todas => columnas_disp.clone(),
-        SeleccionColumnas::Elegir => app_shell::menu_multiple(
-            "Columnas a incluir (Enter sin marcar = cancelar):",
-            columnas_disp.clone(),
-        )?,
+        SeleccionColumnas::Todas => columnas_disp,
+        SeleccionColumnas::Elegir => {
+            app_shell::menu_multiple("Columnas a incluir (Enter sin marcar = cancelar):", columnas_disp)?
+        }
     };
     // Sin ninguna columna marcada hay que cancelar: el resto del flujo
     // seguiría sin error y produciría "0 filas combinadas" con un archivo

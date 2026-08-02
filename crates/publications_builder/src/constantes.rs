@@ -60,76 +60,40 @@ pub fn verificar_columnas_reservadas<'a>(
 /// Rangos de precio (en USD, límites inclusive) → precio de lista asignado.
 /// Se recorren en orden; el primer rango que contiene el precio gana.
 ///
-/// ATENCIÓN — tramo no monotónico sin explicar, pendiente de confirmación de
-/// negocio: `(175, 179) → 16980` es seguido por `(180, 184) → 16195` (BAJA)
-/// y luego `(185, 189) → 16680` (vuelve a subir). En todo otro tramo el
-/// precio de lista sube o se mantiene al subir el rango de compra; este es
-/// el único que no. Puede ser un ajuste puntual de margen o un error de
-/// captura: no se modifica sin confirmación. El test
-/// `tramo_175_189_mantiene_su_forma_no_monotonica_conocida` fija el
-/// comportamiento vigente para que cambiarlo sea deliberado.
-pub static RANGOS_PRECIOS: &[((i64, i64), i64)] = &[
-    ((1, 14), 5749),
-    ((15, 19), 6472),
-    ((20, 24), 7021),
-    ((25, 29), 7252),
-    ((30, 39), 7483),
-    ((40, 44), 7882),
-    ((45, 49), 8113),
-    ((50, 54), 8344),
-    ((55, 59), 8575),
-    ((60, 64), 8806),
-    ((65, 69), 9037),
-    ((70, 74), 9268),
-    ((75, 79), 9500),
-    ((80, 84), 9731),
-    ((85, 89), 9962),
-    ((90, 94), 10193),
-    ((95, 99), 10424),
-    ((100, 109), 10719),
-    ((110, 119), 11181),
-    ((120, 129), 11643),
-    ((130, 139), 12296),
-    ((140, 149), 12949),
-    ((150, 159), 13919),
-    ((160, 164), 14889),
-    ((165, 169), 15692),
-    ((170, 174), 16495),
-    ((175, 179), 16980),
-    ((180, 184), 16195),
-    ((185, 189), 16680),
-    ((190, 199), 17165),
-    ((200, 224), 18136),
-    ((225, 249), 19291),
-    ((250, 274), 20447),
-    ((275, 299), 21603),
-    ((300, 324), 22758),
-    ((325, 349), 24232),
-    ((350, 374), 25705),
-    ((375, 399), 27178),
-    ((400, 424), 28651),
-    ((425, 449), 30759),
-    ((450, 474), 32868),
-    ((475, 499), 34976),
-    ((500, 524), 37084),
-    ((525, 549), 39192),
-    ((550, 574), 41300),
-    ((575, 599), 43409),
-    ((600, 624), 45517),
-    ((625, 649), 47625),
-    ((650, 699), 49733),
-    ((700, 724), 52680),
-    ((725, 749), 54788),
-    ((750, 799), 56896),
-    ((800, 824), 59842),
-    ((825, 849), 61316),
-    ((850, 874), 62789),
-    ((875, 899), 64262),
-    ((900, 924), 65735),
-    ((925, 949), 67843),
-    ((950, 999), 69317),
-    ((1000, 1025), 71628),
-];
+/// Los datos viven en `datos/rangos_precios.csv` (un tramo por línea,
+/// `min,max,precio`; `#` para comentar): un ajuste de precios produce un
+/// diff de esa tabla, no del código fuente. La nota de negocio sobre el
+/// tramo 175-189, que no es monotónico, está en la cabecera de ese archivo.
+pub static RANGOS_PRECIOS: LazyLock<Vec<((i64, i64), i64)>> =
+    LazyLock::new(|| tramos_de(include_str!("datos/rangos_precios.csv")));
+
+/// Parsea `min,max,precio` por línea, ignorando vacías y las que empiezan
+/// con `#`.
+///
+/// # Panics
+/// Si una línea con datos no tiene los tres campos o alguno no es entero:
+/// la tabla se compila DENTRO del binario, así que un formato inválido es un
+/// error de programación y debe verse en la primera corrida, no degradar en
+/// silencio a un tramo faltante (que daría un precio de lista incorrecto).
+#[allow(clippy::expect_used)]
+fn tramos_de(contenido: &'static str) -> Vec<((i64, i64), i64)> {
+    contenido
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(|linea| {
+            let mut campos = linea.split(',').map(str::trim);
+            let mut entero = |cual: &str| -> i64 {
+                campos
+                    .next()
+                    .and_then(|c| c.parse().ok())
+                    .unwrap_or_else(|| panic!("rangos_precios.csv: {cual} inválido en '{linea}'"))
+            };
+            let (min, max, precio) = (entero("mínimo"), entero("máximo"), entero("precio"));
+            ((min, max), precio)
+        })
+        .collect()
+}
 
 pub static MAPEO_CARACTERISTICAS: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(|| {
     HashMap::from([
@@ -214,7 +178,7 @@ mod tests {
         // que quede sin detectar hasta que alguien lo note en producción.
         let excepcion_conocida = ((180, 184), 16195i64);
         let mut anterior: Option<i64> = None;
-        for &(rango, valor) in RANGOS_PRECIOS {
+        for &(rango, valor) in RANGOS_PRECIOS.iter() {
             if (rango, valor) == excepcion_conocida {
                 anterior = Some(valor);
                 continue;

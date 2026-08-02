@@ -5,6 +5,7 @@ use commerce_core::{CoreResult, RutaEscritaReal};
 use polars::prelude::*;
 
 use crate::escritor::nuevo_escritor;
+use crate::fuente::Fuente;
 use crate::lectura::{columna_texto_o_vacia, iter_hojas_valores, preparar_chunk_clave};
 
 /// Reemplaza vocales acentuadas por su versión simple (á→a, é→e, í→i, ó→o,
@@ -86,20 +87,22 @@ pub fn claves_repetidas(
 /// Re-lee `ruta_entrada` por hojas y escribe en `ruta_salida` (streaming) las
 /// filas cuya clave limpia esté (o no, según `mantener_si_en`) en `claves`.
 /// Devuelve cuántas filas se escribieron.
-#[allow(clippy::too_many_arguments)]
 pub fn escribir_filtrado(
-    ruta_entrada: &Path,
+    fuente: &Fuente,
     ruta_salida: &Path,
-    columnas: &[String],
-    columna_clave: &str,
     claves: &HashSet<String>,
     mantener_si_en: bool,
-    excluir: Option<&[&str]>,
     avisar: impl FnMut(&str),
     mut progreso: impl FnMut(u64),
 ) -> CoreResult<usize> {
+    let Fuente {
+        archivo,
+        columnas,
+        columna_clave,
+        excluir,
+    } = *fuente;
     let mut escritor = nuevo_escritor(ruta_salida, columnas.to_vec())?;
-    let chunks = iter_hojas_valores(std::slice::from_ref(&ruta_entrada.to_path_buf()), excluir, avisar)?;
+    let chunks = iter_hojas_valores(std::slice::from_ref(&archivo.to_path_buf()), excluir, avisar)?;
     for chunk in chunks {
         let filas_entrada = chunk.height();
         let preparado = preparar_chunk_clave(&chunk, columnas, columna_clave)?;
@@ -137,18 +140,20 @@ pub fn escribir_filtrado(
 /// vaya a sobrescribir el archivo original DEBE renombrar esta ruta, nunca
 /// la que pidió: hacerlo con la pedida podía renombrar basura vieja sobre
 /// los datos del usuario sin que nada lo detectara.
-#[allow(clippy::too_many_arguments)]
 pub fn escribir_reporte_y_limpio(
-    ruta_entrada: &Path,
+    fuente: &Fuente,
     ruta_dup: &Path,
     ruta_limpia: Option<&Path>,
-    columnas: &[String],
-    columna_clave: &str,
     claves_repetidas: &HashSet<String>,
-    excluir: Option<&[&str]>,
     avisar: impl FnMut(&str),
     mut progreso: impl FnMut(u64),
 ) -> CoreResult<(usize, usize, Option<RutaEscritaReal>)> {
+    let Fuente {
+        archivo,
+        columnas,
+        columna_clave,
+        excluir,
+    } = *fuente;
     let mut escritor_dup = nuevo_escritor(ruta_dup, columnas.to_vec())?;
     let mut escritor_limpio = match ruta_limpia {
         Some(r) => Some(nuevo_escritor(r, columnas.to_vec())?),
@@ -160,7 +165,7 @@ pub fn escribir_reporte_y_limpio(
 
     let resultado = (|| -> CoreResult<(usize, usize)> {
         let mut emitidas: HashSet<String> = HashSet::new();
-        let chunks = iter_hojas_valores(std::slice::from_ref(&ruta_entrada.to_path_buf()), excluir, avisar)?;
+        let chunks = iter_hojas_valores(std::slice::from_ref(&archivo.to_path_buf()), excluir, avisar)?;
         for chunk in chunks {
             let filas_entrada = chunk.height();
             let preparado = preparar_chunk_clave(&chunk, columnas, columna_clave)?;
@@ -304,13 +309,15 @@ mod tests {
         let lim = tmp.path().join("lim.xlsx");
         let columnas = vec!["Sku".to_string(), "Val".to_string()];
         let (n_dup, n_lim, ruta_lim_real) = escribir_reporte_y_limpio(
-            &archivo,
+            &Fuente {
+                archivo: &archivo,
+                columnas: &columnas,
+                columna_clave: "Sku",
+                excluir: Some(&excluir),
+            },
             &rep,
             Some(&lim),
-            &columnas,
-            "Sku",
             &repetidas,
-            Some(&excluir),
             |_| {},
             |_| {},
         )?;
@@ -367,13 +374,15 @@ mod tests {
         let columnas = vec!["Sku".to_string(), "Val".to_string()];
         let repetidas = HashSet::from(["k1".to_string()]);
         let (_n_dup, n_lim, ruta_lim_real) = escribir_reporte_y_limpio(
-            &archivo,
+            &Fuente {
+                archivo: &archivo,
+                columnas: &columnas,
+                columna_clave: "Sku",
+                excluir: None,
+            },
             &rep,
             Some(&ruta_pedida),
-            &columnas,
-            "Sku",
             &repetidas,
-            None,
             |_| {},
             |_| {},
         )?;
@@ -439,13 +448,15 @@ mod tests {
 
         let ruta_dup = tmp.path().join("duplicados.xlsx");
         let n_dup = escribir_filtrado(
-            &base,
+            &Fuente {
+                archivo: &base,
+                columnas: &columnas,
+                columna_clave: "Sku",
+                excluir: None,
+            },
             &ruta_dup,
-            &columnas,
-            "Sku",
             &claves_comp,
             true,
-            None,
             |_| {},
             |_| {},
         )?;
@@ -461,13 +472,15 @@ mod tests {
 
         let ruta_limpia = tmp.path().join("limpia.xlsx");
         let n_limpia = escribir_filtrado(
-            &base,
+            &Fuente {
+                archivo: &base,
+                columnas: &columnas,
+                columna_clave: "Sku",
+                excluir: None,
+            },
             &ruta_limpia,
-            &columnas,
-            "Sku",
             &claves_comp,
             false,
-            None,
             |_| {},
             |_| {},
         )?;
