@@ -100,6 +100,63 @@ pub struct ImageEmbedder {
     siguiente_imagen: std::sync::atomic::AtomicUsize,
 }
 
+/// Restaura el texto de las celdas que `umya-spreadsheet` convirtió a número
+/// al leer.
+///
+/// `umya` preserva el tipo de las celdas `t="str"`, pero para las
+/// `t="inlineStr"` —que es lo que escribe `EscritorXlsx`— llama a su
+/// `guess_typed_data`, que convierte a número todo lo que parsee como `f64`.
+/// Al reescribir el libro, `007` sale como `7`, `1e5` como `100000` y `0000`
+/// como `0`: los códigos del usuario destruidos en silencio.
+///
+/// La pérdida ocurre al LEER, así que no se puede reparar mirando lo que
+/// quedó en memoria: para entonces el texto original ya no existe. Por eso se
+/// relee el archivo con el lector del workspace (calamine, que sí respeta
+/// `inlineStr`) y se restaura desde ahí.
+///
+/// Solo se tocan las celdas que `umya` tipó como numéricas: las que leyó bien
+/// se dejan intactas, y una celda que en el origen era de verdad un número
+/// sigue siéndolo, porque el lector la habría devuelto igual.
+fn restaurar_texto_original(libro: &mut xlsx::Spreadsheet, ruta: &Path) {
+    let Ok(mut origen) = commerce_core::abrir_libro(ruta) else {
+        return;
+    };
+    for nombre in commerce_core::nombres_hojas_libro(&origen) {
+        let Ok(df) = commerce_core::leer_hoja_por_nombre(&mut origen, ruta, &nombre) else {
+            continue;
+        };
+        let Some(hoja) = libro.get_sheet_by_name_mut(&nombre) else {
+            continue;
+        };
+        for (j, columna) in df.get_column_names_owned().into_iter().enumerate() {
+            let col = j as u32 + 1;
+            // Fila 1 = cabecera; los datos empiezan en la 2.
+            restaurar_celda(hoja, col, 1, columna.as_str());
+            let Ok(serie) = df.column(columna.as_str()) else {
+                continue;
+            };
+            let Ok(textos) = serie.as_materialized_series().str().cloned() else {
+                continue;
+            };
+            for (i, valor) in textos.iter().enumerate() {
+                if let Some(texto) = valor {
+                    restaurar_celda(hoja, col, i as u32 + 2, texto);
+                }
+            }
+        }
+    }
+}
+
+/// Reescribe `(col, fila)` como texto solo si `umya` la tipó numérica (`"n"`).
+fn restaurar_celda(hoja: &mut Worksheet, col: u32, fila: u32, texto: &str) {
+    let era_numero = hoja
+        .get_cell((col, fila))
+        .is_some_and(|celda| celda.get_data_type() == "n");
+    if era_numero {
+        hoja.get_cell_mut((col, fila)).set_value_string(texto);
+    }
+}
+
 impl ImageEmbedder {
     pub fn new(cfg: ImageEmbedConfig, mut download_cfg: DownloadConfig, max_concurrency: usize) -> Self {
         // "se intentará doble vez" = 2 intentos TOTALES = 1 reintento.
@@ -373,6 +430,7 @@ impl ImageEmbedder {
     ) -> Result<(PathBuf, usize, usize, usize), MotivoSinProcesar> {
         verificar_tamano_xlsx_seguro(ruta)?;
         let mut libro = xlsx::reader::xlsx::read(ruta).map_err(|_| MotivoSinProcesar::ArchivoCorrupto)?;
+        restaurar_texto_original(&mut libro, ruta);
 
         let mut total_exitos = 0usize;
         let mut total_fallos = 0usize;

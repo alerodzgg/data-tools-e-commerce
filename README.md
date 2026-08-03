@@ -188,6 +188,13 @@ The workspace never uses a panic as a control-flow mechanism for bad input.
   and quietly produce a single undivided file, because a CSV has no sheets. It
   is now an error from the library itself, not just an option the menu happens
   to hide.
+- **The tools can be chained, and a test says so.** Each crate used to verify
+  its writer against its own reader, so the contract *between* crates belonged
+  to nobody — and three defects hid there at once: a missing `xl/styles.xml`
+  (which `umya-spreadsheet` requires), missing `r` cell references (optional in
+  ECMA-376, but any reader that indexes by reference gets a scrambled sheet),
+  and `umya` retyping `inlineStr` cells as numbers, turning `007` into `7`.
+  `ocr_tools/tests/cadena_entre_herramientas.rs` now covers that boundary.
 - **Untrusted input is bounded — on the way out too.** Image downloads run
   behind an SSRF filter (private/reserved IPs rejected, redirects re-validated),
   decoding is capped against decompression bombs, and `.xlsx` inputs are
@@ -200,7 +207,7 @@ The workspace never uses a panic as a control-flow mechanism for bad input.
 ### Tests
 
 ```bash
-cargo test --workspace                    # everything (372 tests)
+cargo test --workspace                    # everything (378 tests)
 cargo clippy --workspace --all-targets    # lints, no warnings
 cargo fmt --all --check                   # formatting
 ```
@@ -224,7 +231,7 @@ refuse the whole file, so that is the property being held.
 
 **Coverage is a threshold, not a number to look at.** CI runs `cargo llvm-cov`
 over the libraries (binaries excluded — they are the interactive shell) and
-fails below **88 % of lines**; the current figure is **92.93 %**. The threshold
+fails below **88 % of lines**; the current figure is **92.91 %**. The threshold
 goes up when ground is gained, never down to make a PR pass. The HTML report is
 uploaded as an artifact on every run.
 
@@ -421,6 +428,14 @@ inválida.
   producía en silencio un único archivo sin dividir, porque un CSV no tiene
   hojas. Ahora es un error de la biblioteca misma, no una opción que el menú
   simplemente oculta.
+- **Las herramientas se pueden encadenar, y hay un test que lo dice.** Cada
+  crate verificaba su escritor contra su propio lector, así que el contrato
+  *entre* crates no era de nadie — y ahí se escondían tres defectos a la vez:
+  faltaba `xl/styles.xml` (que `umya-spreadsheet` exige), faltaban las
+  referencias `r` de las celdas (opcionales en ECMA-376, pero cualquier lector
+  que indexe por referencia recibe una hoja desarmada), y `umya` retipaba las
+  celdas `inlineStr` como números, convirtiendo `007` en `7`.
+  `ocr_tools/tests/cadena_entre_herramientas.rs` cubre ahora esa frontera.
 - **La entrada no confiable está acotada — también a la salida.** Las descargas
   de imágenes pasan por un filtro anti-SSRF (IPs privadas/reservadas
   rechazadas, redirects revalidados), la decodificación tiene tope contra
@@ -434,7 +449,7 @@ inválida.
 ### Pruebas
 
 ```bash
-cargo test --workspace                    # todo (372 tests)
+cargo test --workspace                    # todo (378 tests)
 cargo clippy --workspace --all-targets    # lints, sin warnings
 cargo fmt --all --check                   # formato
 ```
@@ -462,7 +477,7 @@ es la propiedad que se sostiene.
 **La cobertura es un umbral, no un número para mirar.** CI corre
 `cargo llvm-cov` sobre las librerías (los binarios quedan fuera: son la capa
 interactiva) y falla por debajo del **88 % de líneas**; la cifra actual es
-**92.93 %**. El umbral sube cuando se gana terreno, nunca baja para que pase un
+**92.91 %**. El umbral sube cuando se gana terreno, nunca baja para que pase un
 PR. El reporte HTML se sube como artefacto en cada corrida.
 
 CI corre los comandos de arriba en cada push (`.github/workflows/ci.yml`).

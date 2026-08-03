@@ -19,7 +19,6 @@ use hoja::Hoja;
 struct EstadoBase {
     columnas: Vec<String>,
     cabecera: String,
-    fila_vacia: String,
     col_final: String,
     hoja_idx: Option<usize>,
     parte: usize,
@@ -238,13 +237,11 @@ impl EscritorXlsx {
     // ── internos: hojas y bases ──────────────────────────────────────────
 
     fn crear_base(&mut self, base: String, columnas: Vec<String>) -> CoreResult<()> {
-        let cabecera = fila_xml(columnas.iter().map(|c| Some(c.as_str())));
-        let fila_vacia = fila_xml(columnas.iter().map(|_| Some("")));
+        let cabecera = fila_xml(columnas.iter().map(|c| Some(c.as_str())), 1);
         let col_final = col_letra(columnas.len());
         let estado = EstadoBase {
             columnas,
             cabecera,
-            fila_vacia,
             col_final,
             hoja_idx: None,
             parte: 0,
@@ -322,10 +319,16 @@ impl EscritorXlsx {
         while restante > 0 {
             let (hoja_idx, disponible) = self.espacio(base)?;
             let tomar = disponible.min(restante).min(Self::FILAS_POR_BLOQUE);
-            let idx = self.indice_base[base];
-            let fila_vacia = self.bases[idx].fila_vacia.clone();
             let hoja = &mut self.hojas[hoja_idx];
-            hoja.tmp.escribir(fila_vacia.repeat(tomar).as_bytes())?;
+            // Cada fila lleva su propio número, así que ya no se puede
+            // repetir un string precalculado. Una fila sin datos se emite
+            // sin celdas: no hay nada que posicionar dentro de ella.
+            let primera = hoja.filas + 2; // +1 por la cabecera, +1 para 1-based
+            let mut vacias = String::with_capacity(tomar * 16);
+            for fila in primera..primera + tomar {
+                vacias.push_str(&format!(r#"<row r="{fila}"/>"#));
+            }
+            hoja.tmp.escribir(vacias.as_bytes())?;
             hoja.filas += tomar;
             self.total += tomar;
             restante -= tomar;
@@ -344,7 +347,9 @@ impl EscritorXlsx {
             let (hoja_idx, disponible) = self.espacio(base)?;
             let tomar = disponible.min(n - pos).min(Self::FILAS_POR_BLOQUE);
             let bloque = df.slice(pos as i64, tomar);
-            let xml = serializar_bloque_xml(&bloque, &columnas)?;
+            // +1 por la cabecera, +1 porque las filas de Excel son 1-based.
+            let fila_inicial = self.hojas[hoja_idx].filas + 2;
+            let xml = serializar_bloque_xml(&bloque, &columnas, fila_inicial)?;
 
             let hoja = &mut self.hojas[hoja_idx];
             hoja.tmp.escribir(xml.as_bytes())?;
@@ -608,10 +613,19 @@ mod tests {
         escritor.cerrar()?;
 
         let xml = xml_hoja(&ruta, 1);
-        assert_eq!(xml.matches("<row>").count(), 5, "cabecera + x + 2 vacías + y");
-        assert!(xml
-            .trim_end()
-            .ends_with(r#"<row><c t="inlineStr"><is><t>y</t></is></c></row></sheetData></worksheet>"#));
+        // Se verifica la NUMERACIÓN, no solo la cantidad: filas correlativas
+        // sin huecos son lo que permite a un lector posicionar las celdas.
+        let filas: Vec<&str> = xml.matches(r#"<row r=""#).collect();
+        assert_eq!(filas.len(), 5, "cabecera + x + 2 vacías + y");
+        for n in 1..=5 {
+            assert!(
+                xml.contains(&format!(r#"<row r="{n}"#)),
+                "falta la fila {n}: {xml}"
+            );
+        }
+        assert!(xml.trim_end().ends_with(
+            r#"<row r="5"><c r="A5" t="inlineStr"><is><t>y</t></is></c></row></sheetData></worksheet>"#
+        ));
         Ok(())
     }
 

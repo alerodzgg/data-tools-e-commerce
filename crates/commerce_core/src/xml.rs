@@ -42,29 +42,39 @@ pub(crate) fn escapar_texto_xml(texto: &str) -> String {
 /// nunca se reinterpretan como números). Solo para la cabecera y filas
 /// vacías: las filas de datos van por `serializar_bloque_xml`, mucho más
 /// rápido al evitar reasignaciones de `String` por celda.
-pub(crate) fn celda_xml(valor: Option<&str>) -> String {
+pub(crate) fn celda_xml(valor: Option<&str>, columna: usize, fila: usize) -> String {
     match valor {
-        None => "<c/>".to_string(),
-        Some("") => "<c/>".to_string(),
+        // Una celda vacía no se emite: sin valor, su única función sería
+        // ocupar una posición, y para eso ya está la referencia `r` de las
+        // celdas que sí vienen después.
+        None | Some("") => String::new(),
         Some(texto) => {
+            let referencia = format!("{}{fila}", col_letra(columna));
             let escapado = escapar_texto_xml(texto);
             if texto.starts_with(' ') || texto.ends_with(' ') {
-                format!(r#"<c t="inlineStr"><is><t xml:space="preserve">{escapado}</t></is></c>"#)
+                format!(
+                    r#"<c r="{referencia}" t="inlineStr"><is><t xml:space="preserve">{escapado}</t></is></c>"#
+                )
             } else {
-                format!(r#"<c t="inlineStr"><is><t>{escapado}</t></is></c>"#)
+                format!(r#"<c r="{referencia}" t="inlineStr"><is><t>{escapado}</t></is></c>"#)
             }
         }
     }
 }
 
 /// Serializa una fila a partir de valores en memoria (cabecera, filas vacías).
-pub(crate) fn fila_xml<'a, I>(valores: I) -> String
+///
+/// `fila` es el número de fila 1-based dentro de la hoja. Va en el atributo
+/// `r`, igual que la referencia de cada celda: ECMA-376 los hace opcionales
+/// —Excel infiere la posición por orden de aparición— pero cualquier lector
+/// que indexe por referencia recibe una hoja mal armada sin ellos.
+pub(crate) fn fila_xml<'a, I>(valores: I, fila: usize) -> String
 where
     I: IntoIterator<Item = Option<&'a str>>,
 {
-    let mut salida = String::from("<row>");
-    for valor in valores {
-        salida.push_str(&celda_xml(valor));
+    let mut salida = format!(r#"<row r="{fila}">"#);
+    for (i, valor) in valores.into_iter().enumerate() {
+        salida.push_str(&celda_xml(valor, i + 1, fila));
     }
     salida.push_str("</row>");
     salida
@@ -75,7 +85,11 @@ where
 /// El bucle ya compila a código nativo, así que aquí se recorre cada columna
 /// como `StringChunked` y se ensambla cada fila directamente: sin necesidad
 /// de expresiones de Polars para evitar coste de iteración celda a celda.
-pub(crate) fn serializar_bloque_xml(df: &DataFrame, columnas: &[String]) -> CoreResult<String> {
+pub(crate) fn serializar_bloque_xml(
+    df: &DataFrame,
+    columnas: &[String],
+    fila_inicial: usize,
+) -> CoreResult<String> {
     if df.height() == 0 {
         return Ok(String::new());
     }
@@ -95,11 +109,12 @@ pub(crate) fn serializar_bloque_xml(df: &DataFrame, columnas: &[String]) -> Core
     let mut salida = String::with_capacity(n * 32);
     let mut iters: Vec<_> = chunked.iter().map(polars::prelude::ChunkedArray::iter).collect();
 
-    for _ in 0..n {
-        salida.push_str("<row>");
-        for it in iters.iter_mut() {
+    for desplazamiento in 0..n {
+        let fila = fila_inicial + desplazamiento;
+        salida.push_str(&format!(r#"<row r="{fila}">"#));
+        for (i, it) in iters.iter_mut().enumerate() {
             let valor = it.next().flatten();
-            salida.push_str(&celda_xml(valor));
+            salida.push_str(&celda_xml(valor, i + 1, fila));
         }
         salida.push_str("</row>");
     }
@@ -121,8 +136,15 @@ mod tests {
     fn bloque_xml_identico_a_fila_xml() -> CoreResult<()> {
         let valores = ["a&b", "<tag>", " espacios ", "", "x\u{1}y", "normal"];
         let df = df!("A" => valores)?;
-        let esperado: String = valores.iter().map(|v| fila_xml([Some(*v)])).collect();
-        let obtenido = serializar_bloque_xml(&df, &["A".to_string()])?;
+        // Ambos caminos deben numerar las filas igual: `fila_xml` se usa para
+        // la cabecera y `serializar_bloque_xml` para los datos, y una
+        // discrepancia entre ellos daría referencias `r` incoherentes.
+        let esperado: String = valores
+            .iter()
+            .enumerate()
+            .map(|(i, v)| fila_xml([Some(*v)], i + 2))
+            .collect();
+        let obtenido = serializar_bloque_xml(&df, &["A".to_string()], 2)?;
         assert_eq!(obtenido, esperado);
         Ok(())
     }
