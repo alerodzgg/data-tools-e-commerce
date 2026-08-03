@@ -34,74 +34,6 @@ pub enum MotivoSinProcesar {
     FalloEscritura,
 }
 
-/// Techo de bytes DESCOMPRIMIDOS que se acepta sumar entre todas las
-/// entradas del .xlsx (que es un zip). Mismo espíritu que
-/// `MAX_IMAGE_DIM`/`MAX_IMAGE_ALLOC` en `downloader.rs` para imágenes: un
-/// .xlsx pequeño en disco puede descomprimir a un tamaño desproporcionado
-/// ("zip bomb"), y `xlsx::reader::xlsx::read` materializa el libro entero en
-/// memoria de una sola vez, sin ningún límite propio.
-const MAX_XLSX_UNCOMPRESSED: u64 = 512 * 1024 * 1024;
-/// Techo de cantidad de entradas dentro del zip — protege contra el caso de
-/// muchísimas entradas diminutas (que no pesarían por tamaño total pero sí
-/// por la sola cantidad de metadata/archivos a procesar).
-const MAX_XLSX_ENTRIES: usize = 50_000;
-
-/// Revisa el directorio central del zip (barato: no descomprime contenido)
-/// antes de pasarle el archivo a `xlsx::reader::xlsx::read`, que sí lo
-/// descomprime entero en memoria sin ningún límite propio. Devuelve `Err` si
-/// el archivo no es un zip válido o excede los límites de arriba.
-fn verificar_tamano_xlsx_seguro(ruta: &Path) -> Result<(), MotivoSinProcesar> {
-    verificar_tamano_xlsx_con_limites(ruta, MAX_XLSX_UNCOMPRESSED, MAX_XLSX_ENTRIES)
-}
-
-/// Misma lógica que [`verificar_tamano_xlsx_seguro`], con los límites como
-/// parámetro para poder testear el rechazo sin construir un zip de cientos
-/// de MB reales.
-fn verificar_tamano_xlsx_con_limites(
-    ruta: &Path,
-    max_uncompressed: u64,
-    max_entries: usize,
-) -> Result<(), MotivoSinProcesar> {
-    let archivo = std::fs::File::open(ruta).map_err(|_| MotivoSinProcesar::ArchivoCorrupto)?;
-    let mut zip = zip::ZipArchive::new(archivo).map_err(|_| MotivoSinProcesar::ArchivoCorrupto)?;
-    if zip.len() > max_entries {
-        return Err(MotivoSinProcesar::ArchivoDemasiadoGrande);
-    }
-    let mut total: u64 = 0;
-    for i in 0..zip.len() {
-        let entrada = zip
-            .by_index_raw(i)
-            .map_err(|_| MotivoSinProcesar::ArchivoCorrupto)?;
-        total = total.saturating_add(entrada.size());
-        if total > max_uncompressed {
-            return Err(MotivoSinProcesar::ArchivoDemasiadoGrande);
-        }
-    }
-    Ok(())
-}
-
-pub struct ImageEmbedConfig {
-    pub ancho_px: u32,
-    pub alto_px: u32,
-    pub intentos_descarga: u32,
-    pub texto_error: String,
-    pub max_muestra_deteccion: usize,
-    pub umbral_deteccion: f32,
-}
-
-impl Default for ImageEmbedConfig {
-    fn default() -> Self {
-        Self {
-            ancho_px: 118,
-            alto_px: 168,
-            intentos_descarga: 2,
-            texto_error: "Error".to_string(),
-            max_muestra_deteccion: 10,
-            umbral_deteccion: 0.30,
-        }
-    }
-}
-
 /// Cota real de Excel (16 384 columnas `A..XFD`, 1 048 576 filas): protege
 /// `detectar_columnas_url`/`recolectar` de una hoja con `<dimension>`
 /// manipulado que declare una geometría mucho mayor que la real —
@@ -125,25 +57,32 @@ const MAX_FILAS_MUESTREADAS_POR_COLUMNA: u32 = 10_000;
 /// 164M lecturas ante una hoja con geometría manipulada.
 const MAX_LECTURAS_TOTALES_DETECCION: u64 = 2_000_000;
 
-/// Alto de fila: Excel lo mide en puntos. Conversión estándar a 96 DPI
-/// (1 pt = 1/72", 1 px = 1/96") → pt = px × 0.75.
-fn px_a_puntos(px: u32) -> f64 {
-    px as f64 * 0.75
+mod layout;
+mod salvaguardas;
+
+use layout::{generar_tareas, insertar_columnas, px_a_ancho_columna, px_a_puntos, TareaImagen};
+use salvaguardas::verificar_tamano_xlsx_seguro;
+
+pub struct ImageEmbedConfig {
+    pub ancho_px: u32,
+    pub alto_px: u32,
+    pub intentos_descarga: u32,
+    pub texto_error: String,
+    pub max_muestra_deteccion: usize,
+    pub umbral_deteccion: f32,
 }
 
-/// Ancho de columna: Excel lo mide en "caracteres de la fuente por defecto"
-/// (Calibri 11), no en píxeles. Aproximación estándar de la industria:
-/// unidades ≈ píxeles / 7.
-fn px_a_ancho_columna(px: u32) -> f64 {
-    px as f64 / 7.0
-}
-
-/// Una URL de imagen ya con su celda destino calculada en la hoja (1-based,
-/// como en Excel).
-struct TareaImagen {
-    fila_excel: u32,
-    col_destino: u32,
-    url: String,
+impl Default for ImageEmbedConfig {
+    fn default() -> Self {
+        Self {
+            ancho_px: 118,
+            alto_px: 168,
+            intentos_descarga: 2,
+            texto_error: "Error".to_string(),
+            max_muestra_deteccion: 10,
+            umbral_deteccion: 0.30,
+        }
+    }
 }
 
 pub struct ImageEmbedder {
@@ -186,7 +125,6 @@ impl ImageEmbedder {
         if n == 0 {
             return Vec::new();
         }
-        let minimo = ((n as f32 * self.cfg.umbral_deteccion) as usize).max(1);
         let limite_fila = max_row.min(MAX_FILAS_MUESTREADAS_POR_COLUMNA.saturating_add(1));
 
         let mut detectadas = Vec::new();
@@ -216,7 +154,13 @@ impl ImageEmbedder {
                     break;
                 }
             }
-            if aciertos >= minimo {
+            // El umbral se mide contra las celdas REALMENTE muestreadas, no
+            // contra el tamaño de muestra pretendido (`n`): una columna con
+            // pocas celdas llenas pero todas URLs es inequívocamente de
+            // imágenes, y medirla contra `n` la descartaba en silencio — sin
+            // insertar sus imágenes ni decir por qué.
+            let minimo = ((vistos as f32 * self.cfg.umbral_deteccion) as usize).max(1);
+            if vistos > 0 && aciertos >= minimo {
                 detectadas.push(col);
             }
         }
@@ -234,84 +178,19 @@ impl ImageEmbedder {
                 let valor = ws.get_value((col, fila));
                 let urls = url_helper::split_image_urls(Some(&valor));
                 if !urls.is_empty() {
-                    // `recolectado` se pobló con las MISMAS `columnas_url`
-                    // dos líneas arriba: `col` siempre es una clave válida.
-                    #[allow(clippy::unwrap_used)]
-                    recolectado.get_mut(&col).unwrap().insert(fila, urls);
+                    recolectado.entry(col).or_default().insert(fila, urls);
                 }
             }
         }
         recolectado
     }
 
-    // ── Paso 3: insertar las columnas nuevas y ubicar el destino final ───
-    /// Por columna URL, `k` = máximo de URLs en cualquiera de sus celdas: ese
-    /// es el número de columnas nuevas que se le insertan a la derecha, de
-    /// una sola vez para TODA la columna. La posición final de cada columna
-    /// nueva se calcula con una suma de prefijos ANTES de tocar la hoja
-    /// (válida sin importar el orden real de inserción); las inserciones
-    /// reales se hacen de derecha a izquierda con los índices ORIGINALES.
-    fn insertar_columnas(
-        ws: &mut Worksheet,
-        recolectado: &HashMap<u32, HashMap<u32, Vec<String>>>,
-    ) -> HashMap<u32, Vec<u32>> {
-        let mut columnas: Vec<u32> = recolectado.keys().copied().collect();
-        columnas.sort_unstable();
-
-        let k_de: HashMap<u32, u32> = columnas
-            .iter()
-            .map(|&c| {
-                let k = recolectado[&c].values().map(|v| v.len()).max().unwrap_or(0) as u32;
-                (c, k)
-            })
-            .collect();
-
-        let mut destino_final: HashMap<u32, Vec<u32>> = HashMap::new();
-        let mut insertados_antes = 0u32;
-        for &c in &columnas {
-            let k = k_de[&c];
-            let col_final = c + insertados_antes;
-            destino_final.insert(c, ((col_final + 1)..=(col_final + k)).collect());
-            insertados_antes += k;
-        }
-
-        for &c in columnas.iter().rev() {
-            let k = k_de[&c];
-            if k > 0 {
-                ws.insert_new_column_by_index(&(c + 1), &k);
-            }
-        }
-
-        destino_final
-    }
-
-    fn generar_tareas(
-        recolectado: &HashMap<u32, HashMap<u32, Vec<String>>>,
-        destino_final: &HashMap<u32, Vec<u32>>,
-    ) -> Vec<TareaImagen> {
-        let mut tareas = Vec::new();
-        for (col_original, filas) in recolectado {
-            let columnas_destino = &destino_final[col_original];
-            for (&fila, urls) in filas {
-                for (pos, url) in urls.iter().enumerate() {
-                    tareas.push(TareaImagen {
-                        fila_excel: fila,
-                        col_destino: columnas_destino[pos],
-                        url: url.clone(),
-                    });
-                }
-            }
-        }
-        tareas
-    }
-
     /// Decodifica vía `downloader::decode_and_resize` (con `resize_max_dim:
-    /// None`, o sea sin su propio resize — el de acá siempre redimensiona
-    /// exacto a `ancho_px`/`alto_px` después) en vez de una decodificación
-    /// propia: así hereda los límites anti bomba-de-descompresión
-    /// (`image::Limits`) de esa función en vez de mantener una segunda
-    /// implementación que podía divergir en dureza (como pasó: esta función
-    /// usaba `image::load_from_memory` sin ningún límite).
+    /// None`, o sea sin su propio resize: el de acá redimensiona exacto a
+    /// `ancho_px`/`alto_px` después). Reusarla, en vez de decodificar por
+    /// cuenta propia, es lo que hace que los límites anti bomba-de-
+    /// descompresión (`image::Limits`) sean los mismos acá y en el modo de
+    /// análisis, sin una segunda implementación que pueda divergir en dureza.
     fn decodificar_y_redimensionar(&self, content: &[u8]) -> Option<RgbImage> {
         let img = crate::downloader::decode_and_resize(content, None)?;
         Some(image::imageops::resize(
@@ -476,8 +355,8 @@ impl ImageEmbedder {
         if recolectado.values().all(HashMap::is_empty) {
             return (0, 0);
         }
-        let destino_final = Self::insertar_columnas(ws, &recolectado);
-        let tareas = Self::generar_tareas(&recolectado, &destino_final);
+        let destino_final = insertar_columnas(ws, &recolectado, avisar);
+        let tareas = generar_tareas(&recolectado, &destino_final);
         let imagenes = self.descargar_todas(&tareas, avisar).await;
         self.insertar_imagenes(ws, &tareas, &imagenes)
     }
@@ -515,13 +394,19 @@ impl ImageEmbedder {
             return Err(MotivoSinProcesar::SinColumnasDeUrl);
         }
 
-        xlsx::writer::xlsx::write(&libro, destino).map_err(|_| MotivoSinProcesar::FalloEscritura)?;
-        Ok((
-            destino.to_path_buf(),
-            total_exitos,
-            total_fallos,
-            hojas_procesadas,
-        ))
+        // La ruta ÚNICA se resuelve acá, no en el llamador: `umya-spreadsheet`
+        // escribe donde le digan y pisaría una salida anterior. El resto de
+        // los escritores del workspace lo resuelven adentro (ADR 0001) y
+        // devuelven la ruta real; esta función ya devolvía un `PathBuf`, así
+        // que hacerlo acá la alinea sin cambiarle la firma.
+        let destino = commerce_core::ruta_unica(destino);
+        if xlsx::writer::xlsx::write(&libro, &destino).is_err() {
+            // Un fallo a mitad de escritura deja un .xlsx corrupto: se borra,
+            // igual que hace `abortar()` en los escritores propios.
+            let _ = std::fs::remove_file(&destino);
+            return Err(MotivoSinProcesar::FalloEscritura);
+        }
+        Ok((destino, total_exitos, total_fallos, hojas_procesadas))
     }
 }
 
@@ -533,189 +418,6 @@ mod tests {
 
     fn libro_de_prueba() -> xlsx::Spreadsheet {
         xlsx::new_file()
-    }
-
-    #[test]
-    fn px_a_puntos_y_ancho_columna_convierten_estandar() {
-        assert_eq!(px_a_puntos(168), 126.0);
-        assert!((px_a_ancho_columna(118) - 16.857142857142858).abs() < 1e-9);
-    }
-
-    #[test]
-    fn decodificar_y_redimensionar_rechaza_dimensiones_que_exceden_el_limite() {
-        // Los límites anti bomba-de-descompresión se heredan de
-        // `downloader::decode_and_resize` (MAX_IMAGE_DIM=20_000): decodificar
-        // sin ellos deja que un archivo chico declare dimensiones enormes.
-        let img = RgbImage::from_pixel(20_001, 2, image::Rgb([1, 2, 3]));
-        let mut bytes = Vec::new();
-        img.write_to(&mut std::io::Cursor::new(&mut bytes), image::ImageFormat::Png)
-            .unwrap();
-
-        let embedder = ImageEmbedder::new(ImageEmbedConfig::default(), DownloadConfig::default(), 4);
-        assert!(embedder.decodificar_y_redimensionar(&bytes).is_none());
-    }
-
-    #[test]
-    fn detectar_columnas_url_con_pocas_filas_escala_el_umbral() {
-        let mut libro = libro_de_prueba();
-        let ws = libro.get_sheet_by_name_mut("Sheet1").unwrap();
-        ws.get_cell_mut((1, 1)).set_value("Sku");
-        ws.get_cell_mut((2, 1)).set_value("Fotos");
-        ws.get_cell_mut((1, 2)).set_value("A1");
-        ws.get_cell_mut((2, 2)).set_value("http://x.com/1.jpg");
-        ws.get_cell_mut((1, 3)).set_value("A2");
-        ws.get_cell_mut((2, 3)).set_value("http://x.com/2.jpg");
-
-        let embedder = ImageEmbedder::new(ImageEmbedConfig::default(), DownloadConfig::default(), 4);
-        assert_eq!(embedder.detectar_columnas_url(ws, &mut |_| {}), vec![2]);
-    }
-
-    #[test]
-    fn detectar_columnas_url_no_escanea_mas_alla_del_limite_por_columna() {
-        // Una columna sin valores no-vacíos en las primeras filas nunca
-        // dispara el `break` por `vistos >= n`: sin el tope por columna, un
-        // `.xlsx` con `<dimension>` inflado haría escanear hasta `max_row` y
-        // colgaría el proceso. Acá la URL real está MÁS ALLÁ del tope: debe
-        // quedar sin detectar y la llamada debe volver rápido.
-        let mut libro = libro_de_prueba();
-        let ws = libro.get_sheet_by_name_mut("Sheet1").unwrap();
-        ws.get_cell_mut((1, 1)).set_value("Sku");
-        ws.get_cell_mut((2, 1)).set_value("Fotos");
-        let fila_lejana = MAX_FILAS_MUESTREADAS_POR_COLUMNA + 100;
-        ws.get_cell_mut((1, fila_lejana)).set_value("A1");
-        ws.get_cell_mut((2, fila_lejana)).set_value("http://x.com/1.jpg");
-
-        let embedder = ImageEmbedder::new(ImageEmbedConfig::default(), DownloadConfig::default(), 4);
-        let inicio = std::time::Instant::now();
-        let detectadas = embedder.detectar_columnas_url(ws, &mut |_| {});
-        assert!(
-            inicio.elapsed() < std::time::Duration::from_secs(5),
-            "debe rendirse dentro del límite por columna, no escanear hasta max_row"
-        );
-        assert!(
-            detectadas.is_empty(),
-            "la URL está más allá del límite de muestreo por columna: no debería detectarse"
-        );
-    }
-
-    #[test]
-    fn detectar_columnas_url_avisa_y_se_rinde_si_excede_el_limite_total_de_lecturas() {
-        // El límite por columna acota el costo de CADA columna, pero no el
-        // TOTAL: con muchas columnas vacías (cada una cuesta ~10 000
-        // lecturas antes de rendirse), el análisis podía tardar minutos ante
-        // una hoja con geometría manipulada. Acá se registra una geometría
-        // grande (max_row alto, vía una celda lejana que no cae dentro del
-        // rango muestreado) y una URL bien pasada la columna 200 (donde el
-        // presupuesto total ya se agotó con columnas vacías anteriores):
-        // debe rendirse ANTES de llegar a ella, avisando, y sin colgarse.
-        let mut libro = libro_de_prueba();
-        let ws = libro.get_sheet_by_name_mut("Sheet1").unwrap();
-        let fila_lejana = MAX_FILAS_MUESTREADAS_POR_COLUMNA + 100;
-        ws.get_cell_mut((1, fila_lejana)).set_value("x");
-        ws.get_cell_mut((300, 2)).set_value("http://x.com/1.jpg");
-
-        let embedder = ImageEmbedder::new(ImageEmbedConfig::default(), DownloadConfig::default(), 4);
-        let avisos = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
-        let avisos_clon = avisos.clone();
-        let inicio = std::time::Instant::now();
-        let detectadas =
-            embedder.detectar_columnas_url(ws, &mut |m: &str| avisos_clon.borrow_mut().push(m.to_string()));
-        assert!(
-            inicio.elapsed() < std::time::Duration::from_secs(30),
-            "debe rendirse dentro del presupuesto total de lecturas, no escanear todas las columnas"
-        );
-        assert!(
-            detectadas.is_empty(),
-            "la columna con URL está más allá del presupuesto total: no debería detectarse"
-        );
-        assert!(
-            !avisos.borrow().is_empty(),
-            "debe avisar que se alcanzó el límite de lecturas, no rendirse en silencio"
-        );
-    }
-
-    #[test]
-    fn insertar_columnas_calcula_destino_final_y_desplaza_lo_existente() {
-        let mut libro = libro_de_prueba();
-        let ws = libro.get_sheet_by_name_mut("Sheet1").unwrap();
-        // "Fotos" en col 2 con hasta 2 URLs por celda; "Precio" en col 3 (debe
-        // desplazarse a la col 5 tras insertar las 2 columnas de "Fotos").
-        ws.get_cell_mut((1, 1)).set_value("Sku");
-        ws.get_cell_mut((2, 1)).set_value("Fotos");
-        ws.get_cell_mut((3, 1)).set_value("Precio");
-        ws.get_cell_mut((3, 2)).set_value("100");
-
-        let mut recolectado: HashMap<u32, HashMap<u32, Vec<String>>> = HashMap::new();
-        recolectado.insert(
-            2,
-            HashMap::from([(
-                2u32,
-                vec!["http://x.com/1.jpg".to_string(), "http://x.com/2.jpg".to_string()],
-            )]),
-        );
-
-        let destino = ImageEmbedder::insertar_columnas(ws, &recolectado);
-        assert_eq!(destino[&2], vec![3, 4]);
-
-        // "Precio" (originalmente en 3) debe haberse corrido a la 5.
-        assert_eq!(ws.get_value((5, 1)), "Precio");
-        assert_eq!(ws.get_value((5, 2)), "100");
-    }
-
-    #[test]
-    fn insertar_imagenes_escribe_texto_de_error_cuando_la_descarga_fallo() {
-        let mut libro = libro_de_prueba();
-        let ws = libro.get_sheet_by_name_mut("Sheet1").unwrap();
-        let cfg = ImageEmbedConfig::default();
-        let embedder = ImageEmbedder::new(ImageEmbedConfig::default(), DownloadConfig::default(), 4);
-
-        let tareas = vec![TareaImagen {
-            fila_excel: 2,
-            col_destino: 3,
-            url: "http://x.com/no-existe.jpg".to_string(),
-        }];
-        let imagenes: Vec<Option<RgbImage>> = vec![None];
-
-        let (exitos, fallos) = embedder.insertar_imagenes(ws, &tareas, &imagenes);
-        assert_eq!((exitos, fallos), (0, 1));
-        assert_eq!(ws.get_value((3, 2)), cfg.texto_error);
-        // Una tarea fallida no debe dejar la fila/columna con el alto/ancho
-        // de la imagen que nunca se insertó. La comparación es contra el
-        // valor derivado de la imagen y no contra 0.0 porque `get_cell_mut`
-        // crea la entrada con el default interno de `umya-spreadsheet` como
-        // efecto secundario de tocar la celda.
-        let alto_de_imagen = px_a_puntos(cfg.alto_px);
-        let ancho_de_imagen = px_a_ancho_columna(cfg.ancho_px);
-        assert_ne!(
-            *ws.get_row_dimension(&2).unwrap().get_height(),
-            alto_de_imagen,
-            "una fila sin imagen insertada no debe tomar el alto pensado para una imagen"
-        );
-        assert_ne!(
-            *ws.get_column_dimension_by_number(&3).unwrap().get_width(),
-            ancho_de_imagen,
-            "una columna sin imagen insertada no debe tomar el ancho pensado para una imagen"
-        );
-    }
-
-    #[test]
-    fn insertar_imagenes_incrusta_y_ajusta_dimensiones() {
-        let mut libro = libro_de_prueba();
-        let ws = libro.get_sheet_by_name_mut("Sheet1").unwrap();
-        let embedder = ImageEmbedder::new(ImageEmbedConfig::default(), DownloadConfig::default(), 4);
-
-        let tareas = vec![TareaImagen {
-            fila_excel: 3,
-            col_destino: 4,
-            url: "http://x.com/1.jpg".to_string(),
-        }];
-        let imagenes = vec![Some(RgbImage::from_pixel(118, 168, image::Rgb([10, 20, 30])))];
-
-        let (exitos, fallos) = embedder.insertar_imagenes(ws, &tareas, &imagenes);
-        assert_eq!((exitos, fallos), (1, 0));
-        assert_eq!(ws.get_image_collection().len(), 1);
-        assert_eq!(*ws.get_row_dimension(&3).unwrap().get_height(), 126.0);
-        assert!((ws.get_column_dimension_by_number(&4).unwrap().get_width() - (118.0 / 7.0)).abs() < 1e-9);
     }
 
     fn servidor_mock_imagen() -> String {
@@ -751,6 +453,179 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn procesar_archivo_no_pisa_una_salida_anterior() {
+        // `umya-spreadsheet` escribe donde le digan: sin resolver la ruta
+        // única acá, una segunda corrida machacaba el resultado de la primera.
+        let tmp = tempfile::tempdir().unwrap();
+        let origen = tmp.path().join("origen.xlsx");
+        {
+            let mut libro = libro_de_prueba();
+            let ws = libro.get_sheet_by_name_mut("Sheet1").unwrap();
+            ws.get_cell_mut((1, 1)).set_value("Fotos");
+            ws.get_cell_mut((1, 2))
+                .set_value("http://127.0.0.1:1/no-existe.png");
+            xlsx::writer::xlsx::write(&libro, &origen).unwrap();
+        }
+        let destino = tmp.path().join("salida.xlsx");
+        let embedder = ImageEmbedder::new(ImageEmbedConfig::default(), DownloadConfig::default(), 4);
+        let excluir = HashSet::new();
+
+        let (primera, ..) = embedder
+            .procesar_archivo(&origen, &excluir, &destino, |_| {})
+            .await
+            .expect("primera corrida");
+        let (segunda, ..) = embedder
+            .procesar_archivo(&origen, &excluir, &destino, |_| {})
+            .await
+            .expect("segunda corrida");
+
+        assert_ne!(primera, segunda, "la segunda corrida pisó la primera");
+        assert!(primera.exists() && segunda.exists());
+    }
+    #[test]
+    fn decodificar_y_redimensionar_rechaza_dimensiones_que_exceden_el_limite() {
+        // Los límites anti bomba-de-descompresión se heredan de
+        // `downloader::decode_and_resize` (MAX_IMAGE_DIM=20_000): decodificar
+        // sin ellos deja que un archivo chico declare dimensiones enormes.
+        let img = RgbImage::from_pixel(20_001, 2, image::Rgb([1, 2, 3]));
+        let mut bytes = Vec::new();
+        img.write_to(&mut std::io::Cursor::new(&mut bytes), image::ImageFormat::Png)
+            .unwrap();
+
+        let embedder = ImageEmbedder::new(ImageEmbedConfig::default(), DownloadConfig::default(), 4);
+        assert!(embedder.decodificar_y_redimensionar(&bytes).is_none());
+    }
+    #[test]
+    fn detectar_columnas_url_con_pocas_filas_escala_el_umbral() {
+        let mut libro = libro_de_prueba();
+        let ws = libro.get_sheet_by_name_mut("Sheet1").unwrap();
+        ws.get_cell_mut((1, 1)).set_value("Sku");
+        ws.get_cell_mut((2, 1)).set_value("Fotos");
+        ws.get_cell_mut((1, 2)).set_value("A1");
+        ws.get_cell_mut((2, 2)).set_value("http://x.com/1.jpg");
+        ws.get_cell_mut((1, 3)).set_value("A2");
+        ws.get_cell_mut((2, 3)).set_value("http://x.com/2.jpg");
+
+        let embedder = ImageEmbedder::new(ImageEmbedConfig::default(), DownloadConfig::default(), 4);
+        assert_eq!(embedder.detectar_columnas_url(ws, &mut |_| {}), vec![2]);
+    }
+    #[test]
+    fn detectar_columnas_url_no_escanea_mas_alla_del_limite_por_columna() {
+        // Una columna sin valores no-vacíos en las primeras filas nunca
+        // dispara el `break` por `vistos >= n`: sin el tope por columna, un
+        // `.xlsx` con `<dimension>` inflado haría escanear hasta `max_row` y
+        // colgaría el proceso. Acá la URL real está MÁS ALLÁ del tope: debe
+        // quedar sin detectar y la llamada debe volver rápido.
+        let mut libro = libro_de_prueba();
+        let ws = libro.get_sheet_by_name_mut("Sheet1").unwrap();
+        ws.get_cell_mut((1, 1)).set_value("Sku");
+        ws.get_cell_mut((2, 1)).set_value("Fotos");
+        let fila_lejana = MAX_FILAS_MUESTREADAS_POR_COLUMNA + 100;
+        ws.get_cell_mut((1, fila_lejana)).set_value("A1");
+        ws.get_cell_mut((2, fila_lejana)).set_value("http://x.com/1.jpg");
+
+        let embedder = ImageEmbedder::new(ImageEmbedConfig::default(), DownloadConfig::default(), 4);
+        let inicio = std::time::Instant::now();
+        let detectadas = embedder.detectar_columnas_url(ws, &mut |_| {});
+        assert!(
+            inicio.elapsed() < std::time::Duration::from_secs(5),
+            "debe rendirse dentro del límite por columna, no escanear hasta max_row"
+        );
+        assert!(
+            detectadas.is_empty(),
+            "la URL está más allá del límite de muestreo por columna: no debería detectarse"
+        );
+    }
+    #[test]
+    fn detectar_columnas_url_avisa_y_se_rinde_si_excede_el_limite_total_de_lecturas() {
+        // El límite por columna acota el costo de CADA columna, pero no el
+        // TOTAL: con muchas columnas vacías (cada una cuesta ~10 000
+        // lecturas antes de rendirse), el análisis podía tardar minutos ante
+        // una hoja con geometría manipulada. Acá se registra una geometría
+        // grande (max_row alto, vía una celda lejana que no cae dentro del
+        // rango muestreado) y una URL bien pasada la columna 200 (donde el
+        // presupuesto total ya se agotó con columnas vacías anteriores):
+        // debe rendirse ANTES de llegar a ella, avisando, y sin colgarse.
+        let mut libro = libro_de_prueba();
+        let ws = libro.get_sheet_by_name_mut("Sheet1").unwrap();
+        let fila_lejana = MAX_FILAS_MUESTREADAS_POR_COLUMNA + 100;
+        ws.get_cell_mut((1, fila_lejana)).set_value("x");
+        ws.get_cell_mut((300, 2)).set_value("http://x.com/1.jpg");
+
+        let embedder = ImageEmbedder::new(ImageEmbedConfig::default(), DownloadConfig::default(), 4);
+        let avisos = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+        let avisos_clon = avisos.clone();
+        let inicio = std::time::Instant::now();
+        let detectadas =
+            embedder.detectar_columnas_url(ws, &mut |m: &str| avisos_clon.borrow_mut().push(m.to_string()));
+        assert!(
+            inicio.elapsed() < std::time::Duration::from_secs(30),
+            "debe rendirse dentro del presupuesto total de lecturas, no escanear todas las columnas"
+        );
+        assert!(
+            detectadas.is_empty(),
+            "la columna con URL está más allá del presupuesto total: no debería detectarse"
+        );
+        assert!(
+            !avisos.borrow().is_empty(),
+            "debe avisar que se alcanzó el límite de lecturas, no rendirse en silencio"
+        );
+    }
+    #[test]
+    fn insertar_imagenes_escribe_texto_de_error_cuando_la_descarga_fallo() {
+        let mut libro = libro_de_prueba();
+        let ws = libro.get_sheet_by_name_mut("Sheet1").unwrap();
+        let cfg = ImageEmbedConfig::default();
+        let embedder = ImageEmbedder::new(ImageEmbedConfig::default(), DownloadConfig::default(), 4);
+
+        let tareas = vec![TareaImagen {
+            fila_excel: 2,
+            col_destino: 3,
+            url: "http://x.com/no-existe.jpg".to_string(),
+        }];
+        let imagenes: Vec<Option<RgbImage>> = vec![None];
+
+        let (exitos, fallos) = embedder.insertar_imagenes(ws, &tareas, &imagenes);
+        assert_eq!((exitos, fallos), (0, 1));
+        assert_eq!(ws.get_value((3, 2)), cfg.texto_error);
+        // Una tarea fallida no debe dejar la fila/columna con el alto/ancho
+        // de la imagen que nunca se insertó. La comparación es contra el
+        // valor derivado de la imagen y no contra 0.0 porque `get_cell_mut`
+        // crea la entrada con el default interno de `umya-spreadsheet` como
+        // efecto secundario de tocar la celda.
+        let alto_de_imagen = px_a_puntos(cfg.alto_px);
+        let ancho_de_imagen = px_a_ancho_columna(cfg.ancho_px);
+        assert_ne!(
+            *ws.get_row_dimension(&2).unwrap().get_height(),
+            alto_de_imagen,
+            "una fila sin imagen insertada no debe tomar el alto pensado para una imagen"
+        );
+        assert_ne!(
+            *ws.get_column_dimension_by_number(&3).unwrap().get_width(),
+            ancho_de_imagen,
+            "una columna sin imagen insertada no debe tomar el ancho pensado para una imagen"
+        );
+    }
+    #[test]
+    fn insertar_imagenes_incrusta_y_ajusta_dimensiones() {
+        let mut libro = libro_de_prueba();
+        let ws = libro.get_sheet_by_name_mut("Sheet1").unwrap();
+        let embedder = ImageEmbedder::new(ImageEmbedConfig::default(), DownloadConfig::default(), 4);
+
+        let tareas = vec![TareaImagen {
+            fila_excel: 3,
+            col_destino: 4,
+            url: "http://x.com/1.jpg".to_string(),
+        }];
+        let imagenes = vec![Some(RgbImage::from_pixel(118, 168, image::Rgb([10, 20, 30])))];
+
+        let (exitos, fallos) = embedder.insertar_imagenes(ws, &tareas, &imagenes);
+        assert_eq!((exitos, fallos), (1, 0));
+        assert_eq!(ws.get_image_collection().len(), 1);
+        assert_eq!(*ws.get_row_dimension(&3).unwrap().get_height(), 126.0);
+        assert!((ws.get_column_dimension_by_number(&4).unwrap().get_width() - (118.0 / 7.0)).abs() < 1e-9);
+    }
+    #[tokio::test]
     async fn procesar_archivo_con_archivo_corrupto_devuelve_ese_motivo() {
         let tmp = tempfile::tempdir().unwrap();
         let origen = tmp.path().join("corrupto.xlsx");
@@ -764,47 +639,6 @@ mod tests {
             .expect_err("un archivo corrupto no debe procesarse");
         assert!(matches!(error, MotivoSinProcesar::ArchivoCorrupto));
     }
-
-    fn xlsx_minimo(ruta: &Path) {
-        use rust_xlsxwriter::Workbook;
-        let mut wb = Workbook::new();
-        let hoja = wb.add_worksheet();
-        hoja.write(0, 0, "Sku").unwrap();
-        hoja.write(1, 0, "A1").unwrap();
-        wb.save(ruta).unwrap();
-    }
-
-    #[test]
-    fn verificar_tamano_xlsx_seguro_acepta_un_archivo_normal() {
-        let tmp = tempfile::tempdir().unwrap();
-        let ruta = tmp.path().join("normal.xlsx");
-        xlsx_minimo(&ruta);
-        assert!(verificar_tamano_xlsx_seguro(&ruta).is_ok());
-    }
-
-    #[test]
-    fn verificar_tamano_xlsx_con_limites_rechaza_si_excede_bytes_descomprimidos() {
-        let tmp = tempfile::tempdir().unwrap();
-        let ruta = tmp.path().join("normal.xlsx");
-        xlsx_minimo(&ruta);
-        // Límite de 1 byte descomprimido: cualquier .xlsx real lo excede en
-        // la primera entrada — simula, sin fabricar un archivo real de
-        // cientos de MB, el rechazo que dispararía una zip-bomb real.
-        let error = verificar_tamano_xlsx_con_limites(&ruta, 1, usize::MAX)
-            .expect_err("debe rechazar por bytes descomprimidos");
-        assert!(matches!(error, MotivoSinProcesar::ArchivoDemasiadoGrande));
-    }
-
-    #[test]
-    fn verificar_tamano_xlsx_con_limites_rechaza_si_excede_cantidad_de_entradas() {
-        let tmp = tempfile::tempdir().unwrap();
-        let ruta = tmp.path().join("normal.xlsx");
-        xlsx_minimo(&ruta);
-        let error = verificar_tamano_xlsx_con_limites(&ruta, u64::MAX, 0)
-            .expect_err("debe rechazar por cantidad de entradas");
-        assert!(matches!(error, MotivoSinProcesar::ArchivoDemasiadoGrande));
-    }
-
     #[tokio::test]
     async fn procesar_archivo_sin_columnas_de_url_devuelve_ese_motivo() {
         let tmp = tempfile::tempdir().unwrap();
@@ -826,7 +660,6 @@ mod tests {
             .expect_err("sin columnas de URL no debe procesarse");
         assert!(matches!(error, MotivoSinProcesar::SinColumnasDeUrl));
     }
-
     #[tokio::test]
     async fn procesar_archivo_e2e_descarga_e_inserta_una_imagen_real() {
         let tmp = tempfile::tempdir().unwrap();
@@ -855,7 +688,6 @@ mod tests {
         let hoja = releido.get_sheet(&0).unwrap();
         assert_eq!(hoja.get_image_collection().len(), 1);
     }
-
     #[tokio::test]
     async fn dos_urls_distintas_producen_dos_imagenes_distintas_en_el_xlsx() {
         // Regresión: todas las imágenes se incrustaban con el nombre fijo

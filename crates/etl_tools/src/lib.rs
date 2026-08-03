@@ -38,7 +38,7 @@ pub mod fuente;
 pub mod lectura;
 
 pub use borrado::{generar_reporte_cambios, procesar_columnas_con_desplazamiento};
-pub use buscarv::{buscarv, cargar_tabla_busqueda, renombrar_traidas};
+pub use buscarv::{buscarv, cargar_tabla_busqueda, pares_de_renombre, renombrar_traidas};
 pub use caracteres::{anadir_columna_y_ordenar, contar_caracteres, dividir_dentro_fuera};
 pub use coincidencia_parcial::{
     cargar_tabla_parcial, construir_automata, cruzar_chunk_parcial, norm_parcial, Busqueda, OpcionMultiple,

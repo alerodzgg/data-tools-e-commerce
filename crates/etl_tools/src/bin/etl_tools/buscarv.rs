@@ -40,6 +40,7 @@ pub(crate) fn buscarv_modo(ruta_salida: &Path) -> AppResult<()> {
     let accion = preguntar_accion(&prep.base, None)?;
 
     let (salida_traer, renombrar) = etl_tools::renombrar_traidas(&prep.cols_base, &prep.columnas_traer);
+    let (viejos, nuevos) = etl_tools::pares_de_renombre(&renombrar);
 
     app_shell::info("Cargando la tabla de búsqueda...");
     let mut lookup = etl_tools::cargar_tabla_busqueda(
@@ -51,11 +52,7 @@ pub(crate) fn buscarv_modo(ruta_salida: &Path) -> AppResult<()> {
         app_shell::warn,
     )?
     .lazy()
-    .rename(
-        renombrar.keys().cloned().collect::<Vec<_>>(),
-        renombrar.values().cloned().collect::<Vec<_>>(),
-        true,
-    )
+    .rename(viejos, nuevos, true)
     .collect()?;
     if lookup.height() == 0 {
         app_shell::warn("La Tabla no tiene claves usables. Nada que cruzar.");
@@ -156,6 +153,7 @@ pub(crate) fn buscarv_parcial_modo(ruta_salida: &Path) -> AppResult<()> {
 
     let accion = preguntar_accion(&prep.base, None)?;
     let (salida_traer, renombrar) = etl_tools::renombrar_traidas(&prep.cols_base, &prep.columnas_traer);
+    let (viejos, nuevos) = etl_tools::pares_de_renombre(&renombrar);
 
     app_shell::info("Cargando la tabla y construyendo el buscador (Aho-Corasick)...");
     let lookup = etl_tools::cargar_tabla_parcial(
@@ -167,11 +165,7 @@ pub(crate) fn buscarv_parcial_modo(ruta_salida: &Path) -> AppResult<()> {
         app_shell::warn,
     )?
     .lazy()
-    .rename(
-        renombrar.keys().cloned().collect::<Vec<_>>(),
-        renombrar.values().cloned().collect::<Vec<_>>(),
-        true,
-    )
+    .rename(viejos, nuevos, true)
     .collect()?;
     if lookup.height() == 0 {
         app_shell::warn("La Tabla no tiene claves usables. Nada que cruzar.");

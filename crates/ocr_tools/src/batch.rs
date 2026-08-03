@@ -42,36 +42,30 @@ pub fn materialize(
 ) -> PolarsResult<DataFrame> {
     let n = df.height();
 
-    let mut aprobada_por_col: HashMap<&str, Vec<bool>> = HashMap::new();
-    let mut motivo_por_col: HashMap<&str, Vec<String>> = HashMap::new();
+    // Veredicto y motivo van juntos en el MISMO mapa: separados en dos, el
+    // segundo hay que volver a buscarlo por una clave que ya se resolvió, y
+    // esa segunda búsqueda solo puede "no fallar nunca" por un invariante que
+    // el compilador no ve.
+    let mut por_col: HashMap<&str, (Vec<bool>, Vec<String>)> = HashMap::new();
     for col in url_columns {
-        aprobada_por_col.insert(col.as_str(), vec![true; n]);
-        motivo_por_col.insert(col.as_str(), vec![String::new(); n]);
+        por_col.insert(col.as_str(), (vec![true; n], vec![String::new(); n]));
     }
     for cr in results.values() {
-        let Some(aprobada) = aprobada_por_col.get_mut(cr.col.as_str()) else {
+        let Some((aprobada, motivo)) = por_col.get_mut(cr.col.as_str()) else {
             continue;
         };
         let local = cr.idx - idx_offset;
         if local >= 0 && (local as usize) < n {
             let local = local as usize;
             aprobada[local] = cr.approved;
-            // `aprobada_por_col`/`motivo_por_col` se poblaron con el MISMO
-            // conjunto de claves (`url_columns`, arriba); el `get_mut` de
-            // `aprobada` dos líneas arriba ya confirmó que `cr.col` es una
-            // clave válida.
-            #[allow(clippy::unwrap_used)]
-            {
-                motivo_por_col.get_mut(cr.col.as_str()).unwrap()[local] = cr.reason.clone();
-            }
+            motivo[local] = cr.reason.clone();
         }
     }
 
     let mut out = df.clone();
     let mut limpias: HashMap<&str, Vec<String>> = HashMap::new();
     for col in url_columns {
-        let aprobada = &aprobada_por_col[col.as_str()];
-        let motivo = &motivo_por_col[col.as_str()];
+        let (aprobada, motivo) = &por_col[col.as_str()];
         out.with_column(Column::new(format!("_{col}_aprobada").into(), aprobada.clone()))?;
         out.with_column(Column::new(format!("_{col}_motivo").into(), motivo.clone()))?;
 
@@ -97,12 +91,13 @@ pub fn materialize(
     for i in 0..n {
         let mut partes: Vec<String> = Vec::new();
         for col in url_columns {
-            if aprobada_por_col[col.as_str()][i] {
+            let (aprobada, motivo) = &por_col[col.as_str()];
+            if aprobada[i] {
                 imagen_aprobada[i] = true;
             } else {
                 tiene_rechazada[i] = true;
             }
-            let motivo = &motivo_por_col[col.as_str()][i];
+            let motivo = &motivo[i];
             if !motivo.is_empty() {
                 partes.push(format!("[{col}] {motivo}"));
             }

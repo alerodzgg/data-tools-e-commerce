@@ -87,6 +87,22 @@ pub fn cargar_tabla_busqueda(
 
 /// Nombre de salida de cada columna traída (colisión con la Base → sufijo
 /// `_tabla`, `_tabla2`, …).
+/// Separa el mapa de renombres en dos vectores APAREADOS por posición, en un
+/// solo recorrido.
+///
+/// `LazyFrame::rename` aparea `viejos[i]` con `nuevos[i]`. Sacarlos con
+/// `keys()` y `values()` son DOS recorridos distintos del mismo `HashMap`, y
+/// que coincidan posición a posición es un detalle de implementación de
+/// `std`, no algo que su documentación garantice. Si alguna vez divergieran,
+/// cada columna quedaría renombrada con el nombre de otra: sin error, sin
+/// panic, solo cabeceras cambiadas. Un único recorrido lo hace imposible.
+pub fn pares_de_renombre(renombrar: &HashMap<String, String>) -> (Vec<String>, Vec<String>) {
+    renombrar
+        .iter()
+        .map(|(viejo, nuevo)| (viejo.clone(), nuevo.clone()))
+        .unzip()
+}
+
 pub fn renombrar_traidas(
     cols_base: &[String],
     columnas_traer: &[String],
@@ -283,6 +299,7 @@ mod tests {
 
         let cols_base = vec!["Sku".to_string(), "Clave".to_string()];
         let (salida_traer, renombrar) = renombrar_traidas(&cols_base, &["Info".to_string()]);
+        let (viejos, nuevos) = pares_de_renombre(&renombrar);
         let mut lookup = cargar_tabla_busqueda(
             &tabla_archivo,
             "Clave",
@@ -292,11 +309,7 @@ mod tests {
             |_| {},
         )?
         .lazy()
-        .rename(
-            renombrar.keys().cloned().collect::<Vec<_>>(),
-            renombrar.values().cloned().collect::<Vec<_>>(),
-            true,
-        )
+        .rename(viejos, nuevos, true)
         .collect()?;
         lookup.with_column(Column::new("_hit".into(), vec![true; lookup.height()]))?;
 
@@ -346,6 +359,7 @@ mod tests {
 
         let cols_base = vec!["Sku".to_string(), "Clave".to_string()];
         let (salida_traer, renombrar) = renombrar_traidas(&cols_base, &["Info".to_string()]);
+        let (viejos, nuevos) = pares_de_renombre(&renombrar);
         let mut lookup = cargar_tabla_busqueda(
             &tabla_archivo,
             "Clave",
@@ -355,11 +369,7 @@ mod tests {
             |_| {},
         )?
         .lazy()
-        .rename(
-            renombrar.keys().cloned().collect::<Vec<_>>(),
-            renombrar.values().cloned().collect::<Vec<_>>(),
-            true,
-        )
+        .rename(viejos, nuevos, true)
         .collect()?;
         lookup.with_column(Column::new("_hit".into(), vec![true; lookup.height()]))?;
 

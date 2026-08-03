@@ -19,7 +19,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "net", "io-util", "test-util"] }
-umya-spreadsheet = "2.3.3"
+umya-spreadsheet = { workspace = true }
 zip = { workspace = true }
 
 [features]

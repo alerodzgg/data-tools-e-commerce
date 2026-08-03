@@ -68,7 +68,7 @@ proptest! {
     /// devolvería `Ok` con las hojas corruptas. Hay que pedir cada rango para
     /// forzar el parseo de `sheet{N}.xml`, que es donde va el contenido.
     #[test]
-    fn el_libro_generado_siempre_lo_puede_leer_entero_otro_parser(
+    fn el_libro_generado_lo_lee_entero_otro_parser(
         valores in proptest::collection::vec(texto_hostil(), 1..8),
         nombre_hoja in texto_hostil(),
     ) {
@@ -169,4 +169,35 @@ fn los_codigos_con_ceros_a_la_izquierda_no_se_vuelven_numeros() {
         })
         .collect();
     assert_eq!(leidos, codigos);
+}
+
+/// PENDIENTE DE RESOLVER — no borrar sin cerrar la pregunta.
+///
+/// Segundo oráculo: `umya-spreadsheet` es otro lector de XLSX, escrito por
+/// otra gente. Un archivo que aceptan los dos es mucho más probablemente
+/// OOXML válido que uno que solo acepta `calamine`, que es el que ya usamos
+/// para leer en producción (si ambos compartieran el mismo defecto de
+/// permisividad, ninguno lo detectaría).
+///
+/// HOY FALLA con el caso mínimo `nombre_hoja = "&"`. Nuestro `workbook.xml`
+/// emite `<sheet name="&amp;"/>`, que es XML correcto y que `calamine` lee
+/// sin problema. Falta determinar cuál de las dos cosas es:
+///   a) un defecto real nuestro que `calamine` tolera de más, o
+///   b) una limitación de `umya-spreadsheet` al releer entidades XML en el
+///      atributo `name`.
+///
+/// Está `#[ignore]` para no dejar la suite en rojo por una pregunta todavía
+/// sin responder, NO porque el resultado se considere aceptable. Se corre con
+/// `cargo test -p commerce_core -- --ignored`.
+#[test]
+#[ignore = "hallazgo abierto: umya rechaza una hoja llamada '&'; falta decidir si el defecto es nuestro"]
+fn el_libro_generado_tambien_lo_lee_un_segundo_parser() {
+    let tmp = tempfile::tempdir().unwrap();
+    let ruta = tmp.path().join("segundo_oraculo.xlsx");
+    escribir_libro(&ruta, "&", &["&".to_string()]);
+
+    assert!(
+        umya_spreadsheet::reader::xlsx::read(&ruta).is_ok(),
+        "umya-spreadsheet rechaza un libro que calamine lee sin problema"
+    );
 }

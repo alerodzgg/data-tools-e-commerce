@@ -14,5 +14,6 @@ thiserror = { workspace = true }
 zip = { workspace = true }
 
 [dev-dependencies]
+umya-spreadsheet = { workspace = true }
 proptest = "1"
 rust_xlsxwriter = { workspace = true }

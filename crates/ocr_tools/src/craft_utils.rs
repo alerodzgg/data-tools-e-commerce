@@ -154,35 +154,34 @@ pub fn get_det_boxes_core(
         let side01 = dist(corners[0], corners[1]);
         let side12 = dist(corners[1], corners[2]);
         let box_ratio = side01.max(side12) / (side01.min(side12) + 1e-5);
+        // Sembrar los extremos con el PRIMER punto, en vez de calcular cuatro
+        // `min`/`max` que devuelven `Option`: la no-vaciedad queda a la vista
+        // acá mismo y no depende de un `continue` a quince líneas de acá.
         if (1.0 - box_ratio).abs() <= 0.1 {
-            // El `continue` de la línea 143 ya garantiza `points` no vacío.
-            #[allow(clippy::unwrap_used)]
-            let (l, r, t, b) = (
-                points.iter().map(|p| p.x).min().unwrap() as f32,
-                points.iter().map(|p| p.x).max().unwrap() as f32,
-                points.iter().map(|p| p.y).min().unwrap() as f32,
-                points.iter().map(|p| p.y).max().unwrap() as f32,
-            );
-            corners = [(l, t), (r, t), (r, b), (l, b)];
+            if let Some((primero, resto)) = points.split_first() {
+                let (l, r, t, b) = resto
+                    .iter()
+                    .fold((primero.x, primero.x, primero.y, primero.y), |(l, r, t, b), p| {
+                        (l.min(p.x), r.max(p.x), t.min(p.y), b.max(p.y))
+                    });
+                let (l, r, t, b) = (l as f32, r as f32, t as f32, b as f32);
+                corners = [(l, t), (r, t), (r, b), (l, b)];
+            }
         }
 
-        // `corners` es un array de 4 elementos: `min_by` sobre su iterador
-        // nunca da `None`.
-        #[allow(clippy::unwrap_used)]
-        let start_idx = corners
-            .iter()
-            .enumerate()
-            .min_by(|(_, a), (_, b)| {
-                // `partial_cmp` puede dar `None` si algún corner llegó con
-                // coordenadas NaN (geometría derivada de detecciones sobre
-                // imágenes de terceros, no confiables): tratarlo como
-                // "iguales" en vez de entrar en pánico.
-                (a.0 + a.1)
-                    .partial_cmp(&(b.0 + b.1))
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
-            .map(|(i, _)| i)
-            .unwrap();
+        // Se arranca desde el índice 0 y se comparan los otros tres, en vez
+        // de un `min_by` que devuelve `Option` sobre un array de largo fijo:
+        // así no hay ningún `None` que descartar.
+        //
+        // La suma `x + y` puede dar `NaN` si la geometría (derivada de
+        // detecciones sobre imágenes de terceros) trae coordenadas no
+        // finitas: se tratan como "iguales" y gana el índice ya elegido.
+        let clave = |i: usize| corners[i].0 + corners[i].1;
+        let start_idx =
+            (1..corners.len()).fold(0usize, |mejor, i| match clave(i).partial_cmp(&clave(mejor)) {
+                Some(std::cmp::Ordering::Less) => i,
+                _ => mejor,
+            });
         let mut ordered = [BoxPoint { x: 0.0, y: 0.0 }; 4];
         for (i, slot) in ordered.iter_mut().enumerate() {
             let src = (i + start_idx) % 4;

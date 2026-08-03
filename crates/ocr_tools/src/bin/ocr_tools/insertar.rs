@@ -15,7 +15,7 @@ pub(crate) async fn insertar_imagenes_en_archivos(archivos: &[PathBuf]) -> AppRe
 
     for archivo in archivos {
         let stem = archivo.file_stem().unwrap_or_default().to_string_lossy();
-        let destino = commerce_core::ruta_unica(out_dir.join(format!("con_imagenes_{stem}.xlsx")));
+        let destino = out_dir.join(format!("con_imagenes_{stem}.xlsx"));
         let nombre = archivo.file_name().unwrap_or_default().to_string_lossy();
         match embedder
             .procesar_archivo(archivo, &hojas_excluir, &destino, app_shell::warn)

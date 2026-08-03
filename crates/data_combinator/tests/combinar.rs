@@ -523,3 +523,78 @@ fn division_por_archivos_sin_datos_deja_un_solo_archivo_con_cabecera() {
     let leido = std::fs::read_to_string(&rutas[0]).unwrap();
     assert_eq!(leido.trim(), "A,B");
 }
+
+// ---------------------------------------- combinaciones que no significan nada
+#[test]
+fn dividir_en_hojas_con_formato_csv_se_rechaza_en_vez_de_ignorarse() {
+    // Un CSV no tiene hojas: `EscritorCsv` ignora `filas_por_hoja`, así que
+    // sin este rechazo la llamada "funciona" y devuelve un único archivo sin
+    // dividir. El binario ya no ofrece la combinación, pero la biblioteca no
+    // puede depender de que su llamador se acuerde.
+    let tmp = tempfile::tempdir().unwrap();
+    escribir_csv(
+        &tmp.path().join("a.csv"),
+        &df!("Clave" => ["1", "2", "3", "4"], "Id" => ["A", "B", "C", "D"]).unwrap(),
+    );
+    let fuentes = vec![tmp.path().join("a.csv")];
+    let cols = columnas(&["Clave", "Id"]);
+    let excluir = Vec::new();
+
+    let resultado = combinar(
+        &OpcionesCombinar {
+            archivos: &fuentes,
+            columnas: &cols,
+            hojas_excluir: &excluir,
+            formato: Formato::Csv,
+            columna_orden: None,
+            ascendente: true,
+            nombre_salida: "csv_por_hojas",
+            ruta_salida: tmp.path(),
+            division: Division::Hojas(2),
+            umbrales_orden: UmbralesOrden::default(),
+            umbrales_lote_csv: UmbralesLoteCsv::default(),
+        },
+        |_| {},
+        |_| {},
+    );
+
+    assert!(resultado.is_err(), "debe rechazarse, no ignorarse");
+    assert!(
+        !tmp.path().join("csv_por_hojas.csv").exists(),
+        "no debe quedar una salida a medias del intento rechazado"
+    );
+}
+
+#[test]
+fn una_segunda_corrida_no_pisa_la_salida_de_la_primera() {
+    // La unicidad de la ruta la aplica el ESCRITOR (ADR 0001). `combinar` ya
+    // no la duplica, así que este test es lo que sostiene esa garantía desde
+    // afuera, para las tres formas de división.
+    let tmp = tempfile::tempdir().unwrap();
+    escribir_csv(
+        &tmp.path().join("a.csv"),
+        &df!("Clave" => ["1", "2"], "Id" => ["A", "B"]).unwrap(),
+    );
+    let fuentes = vec![tmp.path().join("a.csv")];
+    let cols = columnas(&["Clave", "Id"]);
+    let excluir = Vec::new();
+    let opciones = |nombre: &'static str| OpcionesCombinar {
+        archivos: &fuentes,
+        columnas: &cols,
+        hojas_excluir: &excluir,
+        formato: Formato::Csv,
+        columna_orden: None,
+        ascendente: true,
+        nombre_salida: nombre,
+        ruta_salida: tmp.path(),
+        division: Division::Ninguna,
+        umbrales_orden: UmbralesOrden::default(),
+        umbrales_lote_csv: UmbralesLoteCsv::default(),
+    };
+
+    let (primera, _) = combinar_una(&opciones("repetido"));
+    let (segunda, _) = combinar_una(&opciones("repetido"));
+
+    assert_ne!(primera, segunda, "la segunda corrida pisó la primera");
+    assert!(primera.exists() && segunda.exists());
+}

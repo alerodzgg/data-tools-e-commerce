@@ -401,6 +401,16 @@ pub fn combinar(
     mut progreso: impl FnMut(u64),
 ) -> CoreResult<(Vec<PathBuf>, usize)> {
     validar_nombre_salida(opciones.nombre_salida)?;
+    // `Division::Hojas` divide en HOJAS de un libro, y un CSV no tiene hojas:
+    // `EscritorCsv` ignora `filas_por_hoja`, así que la combinación no falla,
+    // simplemente no divide. Se rechaza acá en vez de dejarla pasar en
+    // silencio — el binario ya no la ofrece, pero la biblioteca no puede
+    // depender de que su llamador se acuerde de la regla.
+    if opciones.formato == Formato::Csv && matches!(opciones.division, Division::Hojas(_)) {
+        return Err(error_generico(
+            "dividir en hojas requiere formato Excel: un CSV no tiene hojas".to_string(),
+        ));
+    }
     let extension = if opciones.formato == Formato::Csv {
         "csv"
     } else {
@@ -419,19 +429,20 @@ pub fn combinar(
                 move |ruta: &Path| nuevo_escritor(formato, ruta, cols_fabrica.clone(), FILAS_POR_HOJA);
             Salida::Particionada(EscritorParticionado::nuevo(fabrica, base, filas))
         }
+        // `base` viaja sin desambiguar en las tres ramas: `EscritorXlsx` y
+        // `EscritorCsv` ya aplican `ruta_unica` al construirse, y la ruta
+        // REAL se lee después de ellos (`escritor.ruta()`). Hacerlo también
+        // acá duplicaba una responsabilidad que ADR 0001 le asigna al
+        // escritor, y solo en dos de las tres ramas.
         Division::Hojas(filas) => {
-            let ruta = commerce_core::ruta_unica(&base);
-            Salida::Unica(nuevo_escritor(opciones.formato, &ruta, columnas.clone(), filas)?)
+            Salida::Unica(nuevo_escritor(opciones.formato, &base, columnas.clone(), filas)?)
         }
-        Division::Ninguna => {
-            let ruta = commerce_core::ruta_unica(&base);
-            Salida::Unica(nuevo_escritor(
-                opciones.formato,
-                &ruta,
-                columnas.clone(),
-                FILAS_POR_HOJA,
-            )?)
-        }
+        Division::Ninguna => Salida::Unica(nuevo_escritor(
+            opciones.formato,
+            &base,
+            columnas.clone(),
+            FILAS_POR_HOJA,
+        )?),
     };
 
     let resultado: CoreResult<()> = {

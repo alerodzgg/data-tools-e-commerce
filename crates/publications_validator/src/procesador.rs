@@ -117,12 +117,27 @@ fn escribir_dedup(
     let (mantener, duplicados) = dedup_bucket(&df_bucket, avisar)?;
     if mantener.height() > 0 {
         let hojas = columna_texto(&mantener, COL_HOJA_ORIGEN)?;
+        // Agrupado que CONSERVA el orden de aparición. Iterar un `HashMap`
+        // acá haría que dos corridas idénticas crearan las hojas en orden
+        // distinto (Rust aleatoriza ese orden por proceso): la salida dejaría
+        // de ser reproducible y el usuario vería sus hojas barajadas sin
+        // motivo. Así, además, salen en el mismo orden que en el archivo de
+        // entrada.
+        let mut orden: Vec<String> = Vec::new();
         let mut grupos: HashMap<String, Vec<usize>> = HashMap::new();
         for (i, h) in hojas.iter().enumerate() {
-            grupos.entry(h.clone().unwrap_or_default()).or_default().push(i);
+            let nombre = h.clone().unwrap_or_default();
+            grupos
+                .entry(nombre.clone())
+                .or_insert_with(|| {
+                    orden.push(nombre);
+                    Vec::new()
+                })
+                .push(i);
         }
-        for (hoja, indices) in grupos {
-            let mut df_h = tomar_filas(&mantener, &indices)?;
+        for hoja in orden {
+            let indices = &grupos[&hoja];
+            let mut df_h = tomar_filas(&mantener, indices)?;
             df_h = df_h.drop(COL_HOJA_ORIGEN)?;
             let alto = df_h.height();
             escritor.escribir(&df_h, Some(&hoja))?;

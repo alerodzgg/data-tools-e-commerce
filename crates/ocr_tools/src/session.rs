@@ -62,6 +62,19 @@ pub struct Detector {
     session: Session,
 }
 
+/// Agrega la dimensión de batch=1: `(c,h,w)` → `(1,c,h,w)`.
+///
+/// El total de elementos no cambia, así que en la práctica no falla. Se
+/// propaga igual en vez de afirmarlo con `expect`: los dos llamadores ya
+/// devuelven `ort::Result`, así que propagar no cuesta nada y no hay que
+/// sostener a mano una invariante sobre la forma de un tensor.
+fn con_batch_1(input: Array3<f32>) -> ort::Result<Array4<f32>> {
+    let (c, h, w) = input.dim();
+    input
+        .into_shape_with_order((1, c, h, w))
+        .map_err(|e| ort::Error::new(format!("forma inesperada del tensor de entrada: {e}")))
+}
+
 impl Detector {
     pub fn new(model_path: impl AsRef<Path>) -> ort::Result<Self> {
         asegurar_runtime_inicializado()?;
@@ -73,11 +86,7 @@ impl Detector {
     /// `input`: CHW normalizado (3,H,W). Devuelve `(text_score, link_score)`,
     /// cada uno de forma `(H/2, W/2)`.
     pub fn forward(&mut self, input: Array3<f32>) -> ort::Result<(Array2<f32>, Array2<f32>)> {
-        let (c, h, w) = input.dim();
-        // Agregar una dimensión de batch=1 a un array de (c,h,w) elementos
-        // conocidos nunca cambia el total de elementos: no puede fallar.
-        #[allow(clippy::expect_used)]
-        let batched: Array4<f32> = input.into_shape_with_order((1, c, h, w)).expect("shape valido");
+        let batched = con_batch_1(input)?;
         let tensor = Tensor::from_array(batched)?;
         let outputs = self.session.run(ort::inputs!["input" => tensor])?;
         let y = salida_output(&outputs)?.try_extract_array::<f32>()?;
@@ -122,11 +131,7 @@ impl Recognizer {
     /// `input`: (1, 64, W) en escala de grises normalizada a [-1,1].
     /// Devuelve las probabilidades tras softmax, forma `(seq_len, num_class)`.
     pub fn forward(&mut self, input: Array3<f32>) -> ort::Result<Array2<f32>> {
-        let (c, h, w) = input.dim();
-        // Agregar una dimensión de batch=1 a un array de (c,h,w) elementos
-        // conocidos nunca cambia el total de elementos: no puede fallar.
-        #[allow(clippy::expect_used)]
-        let batched: Array4<f32> = input.into_shape_with_order((1, c, h, w)).expect("shape valido");
+        let batched = con_batch_1(input)?;
         let tensor = Tensor::from_array(batched)?;
         let outputs = self.session.run(ort::inputs!["input" => tensor])?;
         let logits = salida_output(&outputs)?.try_extract_array::<f32>()?;
