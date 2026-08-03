@@ -200,7 +200,7 @@ The workspace never uses a panic as a control-flow mechanism for bad input.
 ### Tests
 
 ```bash
-cargo test --workspace                    # everything (370 tests)
+cargo test --workspace                    # everything (372 tests)
 cargo clippy --workspace --all-targets    # lints, no warnings
 cargo fmt --all --check                   # formatting
 ```
@@ -211,17 +211,20 @@ menus have a scripting harness (`app_shell::testing::con_guion`) to exercise
 CLI flows without a real terminal. Property-based tests (`proptest`) cover the
 invariants the type system cannot close on its own.
 
-**The generated XLSX is checked against an independent parser.** Unit tests
+**The generated XLSX is checked against two independent parsers.** Unit tests
 compare our output to our own helpers, which cannot catch XML that is
 self-consistent but invalid to whoever reads it. `tests/xlsx_propiedades.rs`
 feeds randomised hostile input (XML metacharacters, quotes, control bytes,
 astral-plane unicode) through the writer and reads the result back with
-`calamine`. A single unescaped `&` does not dirty one cell — it makes Excel
+`calamine` *and* `umya-spreadsheet` — two readers written by different people.
+The second one matters beyond validation: it is what `ocr_tools` reads with,
+so it also proves the five tools can be chained (the output of one is valid
+input for the next). A single unescaped `&` does not dirty one cell — it makes Excel
 refuse the whole file, so that is the property being held.
 
 **Coverage is a threshold, not a number to look at.** CI runs `cargo llvm-cov`
 over the libraries (binaries excluded — they are the interactive shell) and
-fails below **88 % of lines**; the current figure is **92.91 %**. The threshold
+fails below **88 % of lines**; the current figure is **92.93 %**. The threshold
 goes up when ground is gained, never down to make a PR pass. The HTML report is
 uploaded as an artifact on every run.
 
@@ -431,7 +434,7 @@ inválida.
 ### Pruebas
 
 ```bash
-cargo test --workspace                    # todo (370 tests)
+cargo test --workspace                    # todo (372 tests)
 cargo clippy --workspace --all-targets    # lints, sin warnings
 cargo fmt --all --check                   # formato
 ```
@@ -443,19 +446,23 @@ menús interactivos cuentan con un arnés de scripting
 real. Los tests basados en propiedades (`proptest`) cubren las invariantes que
 el sistema de tipos no puede cerrar por sí solo.
 
-**El XLSX generado se verifica contra un parser independiente.** Los tests
+**El XLSX generado se verifica contra dos parsers independientes.** Los tests
 unitarios comparan nuestra salida contra nuestras propias funciones, lo que no
 detecta un XML coherente con lo que creemos escribir pero inválido para quien
 lo lee. `tests/xlsx_propiedades.rs` mete entrada hostil generada al azar
 (metacaracteres XML, comillas, bytes de control, unicode fuera del plano
-básico) por el escritor y relee el resultado con `calamine`. Un solo `&` sin
+básico) por el escritor y relee el resultado con `calamine` *y*
+`umya-spreadsheet` — dos lectores escritos por gente distinta. El segundo
+importa más allá de validar: es con el que lee `ocr_tools`, así que además
+demuestra que las cinco herramientas se pueden encadenar (la salida de una es
+entrada válida de la siguiente). Un solo `&` sin
 escapar no ensucia una celda: hace que Excel rechace el archivo entero, y esa
 es la propiedad que se sostiene.
 
 **La cobertura es un umbral, no un número para mirar.** CI corre
 `cargo llvm-cov` sobre las librerías (los binarios quedan fuera: son la capa
 interactiva) y falla por debajo del **88 % de líneas**; la cifra actual es
-**92.91 %**. El umbral sube cuando se gana terreno, nunca baja para que pase un
+**92.93 %**. El umbral sube cuando se gana terreno, nunca baja para que pase un
 PR. El reporte HTML se sube como artefacto en cada corrida.
 
 CI corre los comandos de arriba en cada push (`.github/workflows/ci.yml`).

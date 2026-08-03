@@ -70,8 +70,32 @@ pub(super) fn volcar_hoja(
     Ok(())
 }
 
-/// Escribe las cuatro partes que enmarcan a las hojas: tipos de contenido,
-/// relaciones raíz, `workbook.xml` y sus relaciones.
+/// Hoja de estilos mínima.
+///
+/// ECMA-376 no la exige —Excel y `calamine` abren el libro sin ella— pero en
+/// la práctica los lectores del ecosistema la dan por sentada:
+/// `umya-spreadsheet`, con el que este mismo workspace LEE los .xlsx en
+/// `ocr_tools`, la pide sin condición y sin ella devuelve `Zip(FileNotFound)`,
+/// que el llamador reporta como "archivo corrupto". Sin esta parte, la salida
+/// de una herramienta del workspace no la puede abrir la siguiente.
+///
+/// Dos `fill` y no uno: Excel reserva el índice 0 para `none` y el 1 para
+/// `gray125`, y rechaza el libro si el segundo falta.
+const ESTILOS_MINIMOS: &str = concat!(
+    r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#,
+    r#"<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">"#,
+    r#"<fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts>"#,
+    r#"<fills count="2"><fill><patternFill patternType="none"/></fill>"#,
+    r#"<fill><patternFill patternType="gray125"/></fill></fills>"#,
+    r#"<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>"#,
+    r#"<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>"#,
+    r#"<cellXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/></cellXfs>"#,
+    r#"<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>"#,
+    r#"</styleSheet>"#,
+);
+
+/// Escribe las partes que enmarcan a las hojas: tipos de contenido, relaciones
+/// raíz, `workbook.xml`, sus relaciones y la hoja de estilos.
 ///
 /// Recibe solo los NOMBRES de las hojas (en orden) porque es todo lo que el
 /// empaquetado necesita saber de ellas.
@@ -99,13 +123,18 @@ pub(super) fn escribir_estructura(zip: &mut Option<ZipWriter<File>>, nombres: &[
         })
         .collect();
 
-    let rels: String = (1..=n)
+    // Las hojas ocupan rId1..rIdN; los estilos van en el siguiente libre.
+    let mut rels: String = (1..=n)
         .map(|k| {
             format!(
                 r#"<Relationship Id="rId{k}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet{k}.xml"/>"#
             )
         })
         .collect();
+    rels.push_str(&format!(
+        r#"<Relationship Id="rId{}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>"#,
+        n + 1
+    ));
 
     // Todo el XML queda armado arriba: acá abajo solo se vuelca, con el
     // `Option` del zip resuelto una vez para las cuatro partes.
@@ -120,6 +149,7 @@ pub(super) fn escribir_estructura(zip: &mut Option<ZipWriter<File>>, nombres: &[
             r#"<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>"#,
             r#"<Default Extension="xml" ContentType="application/xml"/>"#,
             r#"<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>"#,
+            r#"<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>"#,
             "{overrides}</Types>",
         ),
         overrides = overrides
@@ -156,6 +186,9 @@ pub(super) fn escribir_estructura(zip: &mut Option<ZipWriter<File>>, nombres: &[
         ),
         rels = rels
     )?;
+
+    zip.start_file("xl/styles.xml", opciones)?;
+    zip.write_all(ESTILOS_MINIMOS.as_bytes())?;
     Ok(())
 }
 
