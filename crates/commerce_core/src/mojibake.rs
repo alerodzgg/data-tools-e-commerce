@@ -32,7 +32,7 @@ fn reparar_uno(s: &str) -> Option<String> {
 }
 
 /// Aplica la reparación SOLO a los valores únicos con indicios de mojibake.
-pub fn arreglar_serie(serie: &Series) -> PolarsResult<Series> {
+fn arreglar_serie(serie: &Series) -> PolarsResult<Series> {
     let ca = serie.str()?;
 
     let mut vistos: HashSet<String> = HashSet::new();

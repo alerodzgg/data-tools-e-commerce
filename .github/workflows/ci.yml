@@ -59,3 +59,47 @@ jobs:
           key: ${{ matrix.crate }}
       - run: cargo build -p ${{ matrix.crate }} --all-targets
       - run: cargo test -p ${{ matrix.crate }} --all-targets
+
+  cobertura:
+    name: Cobertura (llvm-cov)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: cobertura
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      # `--fail-under-lines` convierte la cobertura en un umbral que se
+      # verifica, no en un número que se mira: sin él, "tenemos cobertura"
+      # significa solo que alguien la midió una vez. El umbral se sube cuando
+      # se gana terreno, nunca se baja para que pase un PR.
+      #
+      # 88 con 92.97% medido: unos 5 puntos de margen, para que un refactor
+      # legítimo no rompa el CI por ruido de un punto, pero sí lo rompa si se
+      # borra un bloque de tests.
+      #
+      # El regex acepta los dos separadores a propósito: con `src/bin/` a
+      # secas, el filtro funciona en el runner de Linux pero NO al correrlo en
+      # Windows, y la misma orden daría dos números distintos según quién la
+      # ejecute (81% con los binarios adentro, 93% sin ellos).
+      - name: Medir y exigir umbral
+        run: >
+          cargo llvm-cov --workspace --all-targets
+          --ignore-filename-regex '(src[/\\]bin[/\\]|[/\\]main\.rs$)'
+          --fail-under-lines 88
+          --summary-only
+      # El detalle queda descargable aunque el umbral pase: sirve para elegir
+      # dónde vale la pena escribir el próximo test.
+      - name: Reporte HTML
+        if: always()
+        run: cargo llvm-cov report --html --output-dir cobertura-html
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cobertura-html
+          path: cobertura-html/

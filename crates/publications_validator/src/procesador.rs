@@ -174,7 +174,7 @@ impl Clasificador {
     ) -> CoreResult<(DataFrame, DataFrame)> {
         if chunk.column(COL_TRADUCIDO).is_err() {
             // Sin esta columna no hay nada que clasificar ni deduplicar: dejar
-            // pasar el chunk "tal cual" (como se hacía antes) sería un bypass
+            // pasar el chunk "tal cual" sería un bypass
             // silencioso de las 7 reglas y las palabras prohibidas, y además
             // rompía el dedup particionado más abajo (todas las filas sin
             // título colapsaban bajo la misma clave vacía y se marcaban

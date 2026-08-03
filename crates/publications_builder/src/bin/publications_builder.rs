@@ -1,6 +1,11 @@
 //! Binario interactivo de `publications_builder`: Únicas, Compatibilidades,
 //! Comprimidas y Amazon.
 
+// Cada `src/bin/*` es un crate root propio: NO hereda los lints de `lib.rs`,
+// asi que la politica se repite aca. Un panic en produccion aborta el proceso
+// que ve el usuario; en tests `.unwrap()` es la forma normal de fallar rapido.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use std::path::{Path, PathBuf};
 
 use app_shell::FlujoError;

@@ -248,7 +248,7 @@ pub fn columnas_union(
 /// CARGADOS en memoria (p. ej. los que devuelve [`iter_hojas_xlsx`]) — sin
 /// abrir ningún archivo. Para un llamador que de todos modos va a cargar los
 /// datos completos, esto reemplaza a [`columnas_union`] sin la apertura
-/// extra que antes hacía falta solo para leer las cabeceras (calamine no
+/// extra que haría falta solo para leer las cabeceras (calamine no
 /// soporta leer solo la cabecera sin materializar la hoja completa, así que
 /// esa apertura "solo para columnas" costaba lo mismo que la de los datos).
 pub fn columnas_union_de_bloques(bloques: &[DataFrame]) -> Vec<String> {

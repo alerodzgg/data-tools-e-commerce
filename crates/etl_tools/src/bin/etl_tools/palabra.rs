@@ -16,9 +16,9 @@ pub(crate) fn procesar_por_palabra(archivo: &Path, ruta_salida: &Path) -> AppRes
     let refs = excluir_refs(&excluir);
 
     // Una sola apertura del archivo para todo lo que sigue (columnas, total
-    // de filas y los datos a procesar) — antes `columnas_union`,
-    // `total_filas` e `iter_hojas_valores` abrían el mismo archivo por
-    // separado, 3 veces, para lo mismo.
+    // de filas y los datos a procesar): resolverlos por separado con
+    // `columnas_union`, `total_filas` e `iter_hojas_valores` abriría el
+    // mismo archivo 3 veces para lo mismo.
     let bloques = etl_tools::iter_hojas_valores(
         std::slice::from_ref(&archivo.to_path_buf()),
         Some(&refs),
@@ -51,10 +51,23 @@ pub(crate) fn procesar_por_palabra(archivo: &Path, ruta_salida: &Path) -> AppRes
         app_shell::warn("Sin palabras válidas. Operación cancelada.");
         return Ok(());
     }
-    let patron = regex::RegexBuilder::new(&format!("(?:{})", palabras.join("|")))
+    // `regex::escape` garantiza que cada palabra sea un patrón válido, pero NO
+    // que la alternancia completa quepa en el límite de tamaño del regex
+    // compilado: una lista lo bastante larga lo excede y `build()` falla. Es
+    // entrada del usuario, así que se le avisa y vuelve al menú.
+    let patron = match regex::RegexBuilder::new(&format!("(?:{})", palabras.join("|")))
         .case_insensitive(true)
         .build()
-        .expect("patron valido: palabras escapadas");
+    {
+        Ok(patron) => patron,
+        Err(error) => {
+            app_shell::error(&format!(
+                "No se pudo armar la búsqueda con esas {} palabra(s): {error}. Prueba con menos.",
+                palabras.len()
+            ));
+            return Ok(());
+        }
+    };
 
     let stem = archivo.file_stem().unwrap_or_default().to_string_lossy();
     let total: u64 = bloques.iter().map(|df| df.height() as u64).sum();

@@ -348,8 +348,9 @@ mod tests {
 
     #[test]
     fn pedir_texto_distingue_cancelar_de_confirmar_vacio() {
-        // Mismo criterio que `menu_confirmar`: antes `pedir_texto` devolvía
-        // `String` a secas y absorbía el ESC como cadena vacía.
+        // Mismo criterio que `menu_confirmar`: cancelar con ESC y confirmar
+        // con el campo vacío son dos respuestas distintas, no la misma
+        // cadena vacía.
         let vacio = con_guion(vec![Respuesta::Texto(String::new())], || {
             pedir_texto("¿texto?").unwrap()
         });

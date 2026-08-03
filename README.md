@@ -92,7 +92,7 @@ To uninstall: `sudo dpkg -r data-tools-e-commerce`.
 
 Workspace of 8 crates under `crates/`:
 
-```
+```text
 commerce_core           ← shared engine (XLSX/CSV writers, readers, XML,
                           mojibake repair, on-disk partitioning). No UI.
 app_shell               ← cross-platform paths + menus/styling + shared dialogs.
@@ -118,6 +118,21 @@ cross-referencing modes) and one module per mode (`palabra`, `duplicados`,
 `ordenar`, `caracteres`, `buscarv`, `encontrar`); `main.rs` holds only the menu
 loop and the dispatch table.
 
+Engine modules are split along the same axis — by what has to be reasoned about
+separately, not by file size:
+
+| Module | Split into | Because each part is |
+| --- | --- | --- |
+| `ocr_tools::async_processor` | `batcher`, `veredicto` | a concurrency mechanism (testable with a stub closure, no ONNX), a decision policy (no I/O), and the orchestration that uses both. |
+| `commerce_core::escritor_xlsx` | `spool`, `hoja`, `paquete` | a memory policy (RAM→disk), Excel's naming rules, the OOXML format, and the write state machine. |
+| `bin/ocr_tools` | `dialogos`, `analizar`, `insertar` | what is asked of the user, and one module per mode; `main.rs` is menu loop and dispatch only. |
+
+**Menu choice and resolved action are separate types.** What the user picks
+carries no payload; the action that runs carries everything its branch needs,
+inside the variant. A mode that filters by a threshold cannot be constructed
+without that threshold, so no code downstream has to defend against its
+absence.
+
 **Business data lives outside the source code**, loaded with `include_str!`:
 
 | File | Contents |
@@ -139,9 +154,13 @@ The workspace never uses a panic as a control-flow mechanism for bad input.
 - **Propagation.** `commerce_core::CoreResult` is the engine-wide result type;
   each binary defines its own `AppError` wrapping the layers it can fail in
   (flow control, engine, Polars, I/O) via `thiserror`, and propagates with `?`.
-- **`unwrap`/`expect` policy.** All seven library crates carry
-  `#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]`:
-  the lint is active in production code and off in tests, where failing fast is
+- **`unwrap`/`expect` policy.** All thirteen crate roots — the seven libraries
+  *and the six binaries* — carry
+  `#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]`.
+  In Rust every `src/bin/*` is its own crate root and does **not** inherit
+  lints from `lib.rs`, so declaring it only in the libraries would leave it off
+  in precisely the code the user runs, where a panic is a visible crash. The
+  lint is active in production code and off in tests, where failing fast is
   the point. The few legitimate exceptions are annotated one by one with their
   justification. Literal regex patterns go through
   `commerce_core::regex_literal`, which centralises that single exception
@@ -168,7 +187,7 @@ The workspace never uses a panic as a control-flow mechanism for bad input.
 ### Tests
 
 ```bash
-cargo test --workspace                    # everything (350 tests)
+cargo test --workspace                    # everything (365 tests)
 cargo clippy --workspace --all-targets    # lints, no warnings
 cargo fmt --all --check                   # formatting
 ```
@@ -179,7 +198,21 @@ menus have a scripting harness (`app_shell::testing::con_guion`) to exercise
 CLI flows without a real terminal. Property-based tests (`proptest`) cover the
 invariants the type system cannot close on its own.
 
-CI runs the three commands above on every push (`.github/workflows/ci.yml`).
+**The generated XLSX is checked against an independent parser.** Unit tests
+compare our output to our own helpers, which cannot catch XML that is
+self-consistent but invalid to whoever reads it. `tests/xlsx_propiedades.rs`
+feeds randomised hostile input (XML metacharacters, quotes, control bytes,
+astral-plane unicode) through the writer and reads the result back with
+`calamine`. A single unescaped `&` does not dirty one cell — it makes Excel
+refuse the whole file, so that is the property being held.
+
+**Coverage is a threshold, not a number to look at.** CI runs `cargo llvm-cov`
+over the libraries (binaries excluded — they are the interactive shell) and
+fails below **88 % of lines**; the current figure is **92.97 %**. The threshold
+goes up when ground is gained, never down to make a PR pass. The HTML report is
+uploaded as an artifact on every run.
+
+CI runs the commands above on every push (`.github/workflows/ci.yml`).
 
 ---
 
@@ -272,7 +305,7 @@ desinstalar: `sudo dpkg -r data-tools-e-commerce`.
 
 Workspace de 8 crates bajo `crates/`:
 
-```
+```text
 commerce_core           ← motor compartido (escritores XLSX/CSV, lectores, XML,
                           mojibake, particionado a disco). Sin UI.
 app_shell               ← rutas multiplataforma + menús/estilo + diálogos comunes.
@@ -298,6 +331,21 @@ tres modos de cruce) y un módulo por modo (`palabra`, `duplicados`, `ordenar`,
 `caracteres`, `buscarv`, `encontrar`); `main.rs` conserva solo el bucle de
 menú y la tabla de despacho.
 
+Los módulos de motor se cortan por el mismo eje: por lo que hay que razonar
+aparte, no por tamaño de archivo.
+
+| Módulo | Dividido en | Porque cada parte es |
+| --- | --- | --- |
+| `ocr_tools::async_processor` | `batcher`, `veredicto` | un mecanismo de concurrencia (se prueba con un cierre falso, sin ONNX), una política de decisión (sin I/O), y la orquestación que usa ambos. |
+| `commerce_core::escritor_xlsx` | `spool`, `hoja`, `paquete` | una política de memoria (RAM→disco), las reglas de nombre de Excel, el formato OOXML, y la máquina de estados de escritura. |
+| `bin/ocr_tools` | `dialogos`, `analizar`, `insertar` | lo que se le pregunta al usuario, y un módulo por modo; `main.rs` es solo bucle de menú y despacho. |
+
+**La opción del menú y la acción resuelta son tipos distintos.** Lo que el
+usuario elige no lleva datos; la acción que se ejecuta lleva adentro de la
+variante todo lo que su rama necesita. Un modo que filtra por un umbral no se
+puede construir sin ese umbral, así que ningún código posterior tiene que
+defenderse de su ausencia.
+
 **Los datos de negocio viven fuera del código fuente**, cargados con
 `include_str!`:
 
@@ -322,9 +370,13 @@ inválida.
   motor; cada binario define su propio `AppError` que envuelve las capas en
   las que puede fallar (flujo, motor, Polars, E/S) vía `thiserror`, y propaga
   con `?`.
-- **Política de `unwrap`/`expect`.** Los siete crates de librería llevan
-  `#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]`:
-  el lint está activo en producción y apagado en tests, donde fallar rápido es
+- **Política de `unwrap`/`expect`.** Los trece crate roots —los siete de
+  librería *y los seis binarios*— llevan
+  `#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]`.
+  En Rust cada `src/bin/*` es un crate root propio y **no** hereda los lints de
+  `lib.rs`, así que declararlo solo en las librerías lo dejaría apagado justo
+  en el código que corre el usuario, donde un panic es un crash visible. El
+  lint está activo en producción y apagado en tests, donde fallar rápido es
   justamente lo que se busca. Las pocas excepciones legítimas están anotadas
   una por una con su justificación. Los patrones regex literales pasan por
   `commerce_core::regex_literal`, que centraliza esa única excepción en vez de
@@ -352,7 +404,7 @@ inválida.
 ### Pruebas
 
 ```bash
-cargo test --workspace                    # todo (350 tests)
+cargo test --workspace                    # todo (365 tests)
 cargo clippy --workspace --all-targets    # lints, sin warnings
 cargo fmt --all --check                   # formato
 ```
@@ -364,5 +416,19 @@ menús interactivos cuentan con un arnés de scripting
 real. Los tests basados en propiedades (`proptest`) cubren las invariantes que
 el sistema de tipos no puede cerrar por sí solo.
 
-CI corre los tres comandos de arriba en cada push
-(`.github/workflows/ci.yml`).
+**El XLSX generado se verifica contra un parser independiente.** Los tests
+unitarios comparan nuestra salida contra nuestras propias funciones, lo que no
+detecta un XML coherente con lo que creemos escribir pero inválido para quien
+lo lee. `tests/xlsx_propiedades.rs` mete entrada hostil generada al azar
+(metacaracteres XML, comillas, bytes de control, unicode fuera del plano
+básico) por el escritor y relee el resultado con `calamine`. Un solo `&` sin
+escapar no ensucia una celda: hace que Excel rechace el archivo entero, y esa
+es la propiedad que se sostiene.
+
+**La cobertura es un umbral, no un número para mirar.** CI corre
+`cargo llvm-cov` sobre las librerías (los binarios quedan fuera: son la capa
+interactiva) y falla por debajo del **88 % de líneas**; la cifra actual es
+**92.97 %**. El umbral sube cuando se gana terreno, nunca baja para que pase un
+PR. El reporte HTML se sube como artefacto en cada corrida.
+
+CI corre los comandos de arriba en cada push (`.github/workflows/ci.yml`).

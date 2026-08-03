@@ -1,81 +1,20 @@
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
-use std::io::{self, Seek, SeekFrom, Write};
+use std::io;
 use std::path::{Path, PathBuf};
 
-use ::zip::write::{FileOptions, SimpleFileOptions};
-use ::zip::{CompressionMethod, ZipWriter};
+use ::zip::ZipWriter;
 use polars::prelude::*;
 
 use crate::error::CoreResult;
 use crate::rutas::ruta_unica;
-use crate::xml::{col_letra, fila_xml, serializar_bloque_xml, MAX_FILAS_EXCEL, XML_DECL};
+use crate::xml::{col_letra, fila_xml, serializar_bloque_xml, MAX_FILAS_EXCEL};
 
-const RAM_POR_HOJA: usize = 64 * 1024 * 1024; // umbral RAM→disco
+mod hoja;
+mod paquete;
+mod spool;
 
-/// Buffer que empieza en RAM y pasa a disco si crece demasiado.
-enum SpoolTemp {
-    Mem(Vec<u8>),
-    Disco(File),
-}
-
-impl SpoolTemp {
-    fn nuevo() -> Self {
-        SpoolTemp::Mem(Vec::new())
-    }
-
-    fn escribir(&mut self, datos: &[u8]) -> io::Result<()> {
-        match self {
-            SpoolTemp::Mem(buf) => {
-                if buf.len() + datos.len() > RAM_POR_HOJA {
-                    let mut archivo = tempfile::tempfile()?;
-                    archivo.write_all(buf)?;
-                    archivo.write_all(datos)?;
-                    *self = SpoolTemp::Disco(archivo);
-                } else {
-                    buf.extend_from_slice(datos);
-                }
-                Ok(())
-            }
-            SpoolTemp::Disco(archivo) => archivo.write_all(datos),
-        }
-    }
-
-    fn volcar_en<W: Write>(&mut self, salida: &mut W) -> io::Result<()> {
-        match self {
-            SpoolTemp::Mem(buf) => salida.write_all(buf),
-            SpoolTemp::Disco(archivo) => {
-                archivo.seek(SeekFrom::Start(0))?;
-                io::copy(archivo, salida)?;
-                Ok(())
-            }
-        }
-    }
-}
-
-/// Una hoja física del libro. Su XML se acumula en un temporal (RAM→disco).
-///
-/// Hace falta un temporal porque el elemento `<dimension>` va ANTES de los
-/// datos pero solo se conoce al terminar la hoja (necesita el nº de filas).
-struct Hoja {
-    nombre: String,
-    col_final: String,
-    tmp: SpoolTemp,
-    filas: usize,
-}
-
-impl Hoja {
-    fn nueva(nombre: String, col_final: String, cabecera_xml: &str) -> io::Result<Self> {
-        let mut tmp = SpoolTemp::nuevo();
-        tmp.escribir(cabecera_xml.as_bytes())?; // cabecera = fila 1
-        Ok(Self {
-            nombre,
-            col_final,
-            tmp,
-            filas: 0,
-        })
-    }
-}
+use hoja::Hoja;
 
 struct EstadoBase {
     columnas: Vec<String>,
@@ -109,8 +48,6 @@ impl Default for OpcionesEscritorXlsx {
         }
     }
 }
-
-const CARS_INVALIDOS: &[char] = &['[', ']', ':', '*', '?', '/', '\\'];
 
 /// Escribe XLSX generando el XML OOXML directo dentro del zip, sin pasar por
 /// una librería de hojas de cálculo. Memoria plana: funciona igual con 10
@@ -191,7 +128,7 @@ impl EscritorXlsx {
         if df.height() == 0 {
             return Ok(());
         }
-        let base = self.sanear(hoja.unwrap_or(&self.hoja_defecto));
+        let base = hoja::sanear(hoja.unwrap_or(&self.hoja_defecto));
         if !self.indice_base.contains_key(&base) {
             let columnas: Vec<String> = df.get_column_names().iter().map(|s| s.to_string()).collect();
             self.crear_base(base.clone(), columnas)?;
@@ -229,14 +166,12 @@ impl EscritorXlsx {
             acumulado
         };
 
-        if !con_datos.iter().any(|&b| b) {
+        // Un bloque 100% vacío se difiere entero. Si hay datos, `ultima` es la
+        // última fila con contenido: lo que venga después queda diferido igual.
+        let Some(ultima) = con_datos.iter().rposition(|&b| b) else {
             self.bases[idx].vacias_pendientes += df.height();
             return Ok(());
-        }
-
-        // El `return` de arriba ya garantiza que hay al menos un `true`.
-        #[allow(clippy::unwrap_used)]
-        let ultima = con_datos.iter().rposition(|&b| b).unwrap();
+        };
 
         let pendientes = self.bases[idx].vacias_pendientes;
         if pendientes > 0 {
@@ -254,10 +189,10 @@ impl EscritorXlsx {
     ///
     /// Si alguna operación falible falla a mitad de camino, el archivo a
     /// medias se BORRA acá mismo (igual que `abortar()`) antes de propagar
-    /// el error: antes, `cerrado` se marcaba `true` como primer paso, así
-    /// que un fallo dejaba tanto a `abortar()` como al `Drop` automático
-    /// neutralizados (ambos son no-op si `cerrado` ya es `true`) — el xlsx
-    /// corrupto quedaba en disco sin ninguna forma de limpiarlo después.
+    /// el error, y `cerrado` se marca `true` solo AL FINAL: marcarlo como
+    /// primer paso neutralizaría tanto a `abortar()` como al `Drop`
+    /// automático (ambos son no-op si `cerrado` ya es `true`) y el xlsx
+    /// corrupto quedaría en disco sin ninguna forma de limpiarlo.
     pub fn cerrar(&mut self) -> CoreResult<()> {
         if self.cerrado {
             return Ok(());
@@ -283,11 +218,9 @@ impl EscritorXlsx {
         self.escribir_estructura()?;
         // `self.zip` solo pasa a `None` acá mismo, y `cerrar_interno` no
         // puede correr dos veces (`cerrar()` es idempotente vía `cerrado`).
-        #[allow(clippy::expect_used)]
-        self.zip
-            .take()
-            .expect("EscritorXlsx: zip ya finalizado")
-            .finish()?;
+        if let Some(zip) = self.zip.take() {
+            zip.finish()?;
+        }
         Ok(())
     }
 
@@ -302,35 +235,7 @@ impl EscritorXlsx {
         Ok(())
     }
 
-    // Solo se llama antes de `cerrar_interno`/`abortar` (que dejan `zip` en
-    // `None`): `escribir()` y las funciones internas de emisión chequean
-    // `self.cerrado` antes de llegar acá.
-    #[allow(clippy::expect_used)]
-    fn zip_mut(&mut self) -> &mut ZipWriter<File> {
-        self.zip.as_mut().expect("EscritorXlsx: zip ya finalizado")
-    }
-
     // ── internos: hojas y bases ──────────────────────────────────────────
-
-    fn sanear(&self, nombre: &str) -> String {
-        // Además de los caracteres prohibidos por Excel (`CARS_INVALIDOS`),
-        // borra los de control ilegales en XML 1.0 (0x00-0x1F): un nombre de
-        // hoja de un archivo de ORIGEN externo con un byte de control crudo
-        // (p. ej. `\u{0}`) generaba un `xl/workbook.xml` inválido — el mismo
-        // caso que `escapar_texto_xml` ya cubre para el CONTENIDO de las
-        // celdas, pero que acá, en el nombre de hoja, quedaba sin cubrir.
-        let limpio: String = nombre
-            .chars()
-            .filter(|c| !CARS_INVALIDOS.contains(c) && (*c as u32) >= 0x20)
-            .collect();
-        let recortado = limpio.chars().take(31).collect::<String>();
-        let recortado = recortado.trim();
-        if recortado.is_empty() {
-            "Hoja".to_string()
-        } else {
-            recortado.to_string()
-        }
-    }
 
     fn crear_base(&mut self, base: String, columnas: Vec<String>) -> CoreResult<()> {
         let cabecera = fila_xml(columnas.iter().map(|c| Some(c.as_str())));
@@ -356,14 +261,14 @@ impl EscritorXlsx {
 
     fn nombre_de_hoja(&self, base: &str, parte: usize) -> String {
         if self.numerar_siempre {
-            self.sanear(&format!("{base}_{parte}"))
+            hoja::sanear(&format!("{base}_{parte}"))
         } else {
             let nombre = if parte == 1 {
                 base.to_string()
             } else {
                 format!("{base}_{parte}")
             };
-            self.sanear(&nombre)
+            hoja::sanear(&nombre)
         }
     }
 
@@ -374,25 +279,9 @@ impl EscritorXlsx {
         }
 
         self.bases[idx].parte += 1;
-        let mut nombre = self.nombre_de_hoja(base, self.bases[idx].parte);
         // Unicidad entre TODAS las hojas del libro (Excel no admite repetidos).
-        // Cada candidato se trunca siempre desde el nombre ORIGINAL (no desde
-        // el candidato anterior), para que una segunda colisión dé "Base_2" y
-        // no "Base_1_2".
-        if self.nombres_hojas.contains(&nombre) {
-            let original = nombre.clone();
-            let mut k = 1u64;
-            loop {
-                let sufijo = format!("_{k}");
-                let corte = 31usize.saturating_sub(sufijo.chars().count());
-                let candidato = original.chars().take(corte).collect::<String>() + &sufijo;
-                if !self.nombres_hojas.contains(&candidato) {
-                    nombre = candidato;
-                    break;
-                }
-                k += 1;
-            }
-        }
+        let candidato = self.nombre_de_hoja(base, self.bases[idx].parte);
+        let nombre = hoja::nombre_unico(candidato, &self.nombres_hojas);
         self.nombres_hojas.insert(nombre.clone());
 
         let col_final = self.bases[idx].col_final.clone();
@@ -404,8 +293,11 @@ impl EscritorXlsx {
         Ok(())
     }
 
-    /// Asegura una hoja con sitio y devuelve cuántas filas caben.
-    fn espacio(&mut self, base: &str) -> CoreResult<usize> {
+    /// Asegura una hoja con sitio y devuelve EN CUÁL quedó y cuántas filas
+    /// caben. Devolver el índice —en vez de que cada llamador lo vuelva a
+    /// sacar de `hoja_idx` sabiendo que ya es `Some`— es lo que hace que ahí
+    /// no haga falta ningún `unwrap`.
+    fn espacio(&mut self, base: &str) -> CoreResult<(usize, usize)> {
         let idx = self.indice_base[base];
         let necesita_nueva = match self.bases[idx].hoja_idx {
             None => true,
@@ -414,10 +306,13 @@ impl EscritorXlsx {
         if necesita_nueva {
             self.nueva_hoja(base)?;
         }
-        // `nueva_hoja` siempre deja `hoja_idx` en `Some`.
-        #[allow(clippy::unwrap_used)]
-        let hoja_idx = self.bases[idx].hoja_idx.unwrap();
-        Ok(self.filas_por_hoja - self.hojas[hoja_idx].filas)
+        match self.bases[idx].hoja_idx {
+            Some(hoja_idx) => Ok((hoja_idx, self.filas_por_hoja - self.hojas[hoja_idx].filas)),
+            // `nueva_hoja` siempre deja `hoja_idx` en `Some`. Que no lo hiciera
+            // sería un bug de este módulo, no un dato malo del usuario, pero se
+            // propaga como error igual: nada acá justifica abortar el proceso.
+            None => Err(io::Error::other("EscritorXlsx: hoja sin abrir tras nueva_hoja()").into()),
+        }
     }
 
     // ── internos: emisión ────────────────────────────────────────────────
@@ -425,13 +320,10 @@ impl EscritorXlsx {
     fn emitir_vacias(&mut self, base: &str, n: usize) -> CoreResult<()> {
         let mut restante = n;
         while restante > 0 {
-            let disponible = self.espacio(base)?;
+            let (hoja_idx, disponible) = self.espacio(base)?;
             let tomar = disponible.min(restante).min(Self::FILAS_POR_BLOQUE);
             let idx = self.indice_base[base];
             let fila_vacia = self.bases[idx].fila_vacia.clone();
-            // `self.espacio(base)?` dos líneas arriba ya garantiza `Some`.
-            #[allow(clippy::unwrap_used)]
-            let hoja_idx = self.bases[idx].hoja_idx.unwrap();
             let hoja = &mut self.hojas[hoja_idx];
             hoja.tmp.escribir(fila_vacia.repeat(tomar).as_bytes())?;
             hoja.filas += tomar;
@@ -449,15 +341,11 @@ impl EscritorXlsx {
         let idx = self.indice_base[base];
         let columnas = self.bases[idx].columnas.clone();
         while pos < n {
-            let disponible = self.espacio(base)?;
+            let (hoja_idx, disponible) = self.espacio(base)?;
             let tomar = disponible.min(n - pos).min(Self::FILAS_POR_BLOQUE);
             let bloque = df.slice(pos as i64, tomar);
             let xml = serializar_bloque_xml(&bloque, &columnas)?;
 
-            let idx = self.indice_base[base];
-            // `self.espacio(base)?` dos líneas arriba ya garantiza `Some`.
-            #[allow(clippy::unwrap_used)]
-            let hoja_idx = self.bases[idx].hoja_idx.unwrap();
             let hoja = &mut self.hojas[hoja_idx];
             hoja.tmp.escribir(xml.as_bytes())?;
             hoja.filas += tomar;
@@ -486,120 +374,15 @@ impl EscritorXlsx {
     // ── internos: empaquetado OOXML ──────────────────────────────────────
 
     fn cerrar_hoja(&mut self, hoja_idx: usize) -> CoreResult<()> {
-        let indice = hoja_idx + 1; // 1-based: sheet{indice}.xml
-        let filas_totales = self.hojas[hoja_idx].filas + 1; // +1 por la cabecera
-        let col_final = self.hojas[hoja_idx].col_final.clone();
-        let dimension = format!(r#"<dimension ref="A1:{col_final}{filas_totales}"/>"#);
-
-        let opciones: SimpleFileOptions = FileOptions::default()
-            .compression_method(CompressionMethod::Deflated)
-            .compression_level(Some(1))
-            .large_file(true);
-        self.zip_mut()
-            .start_file(format!("xl/worksheets/sheet{indice}.xml"), opciones)?;
-        self.zip_mut().write_all(XML_DECL.as_bytes())?;
-        self.zip_mut()
-            .write_all(br#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">"#)?;
-        self.zip_mut().write_all(dimension.as_bytes())?;
-        self.zip_mut().write_all(b"<sheetData>")?;
-        // Mismo invariante que `zip_mut` (no se puede usar `zip_mut()` acá
-        // directamente: entraría en conflicto de préstamo con `self.hojas`).
-        #[allow(clippy::expect_used)]
-        let zip = self.zip.as_mut().expect("EscritorXlsx: zip ya finalizado");
-        self.hojas[hoja_idx].tmp.volcar_en(zip)?;
-        self.zip_mut().write_all(b"</sheetData></worksheet>")?;
-        Ok(())
-    }
-
-    fn escapar_atributo(texto: &str) -> String {
-        // Defensa en profundidad: `sanear()` ya borra los caracteres de
-        // control del nombre de hoja antes de llegar acá, pero esta función
-        // no depende de eso para ser segura por sí misma.
-        let sin_control: String = texto.chars().filter(|c| (*c as u32) >= 0x20).collect();
-        sin_control
-            .replace('&', "&amp;")
-            .replace('<', "&lt;")
-            .replace('>', "&gt;")
-            .replace('"', "&quot;")
+        // El zip y la hoja se prestan por separado porque el volcado escribe
+        // una DENTRO del otro.
+        let Self { zip, hojas, .. } = self;
+        paquete::volcar_hoja(zip, &mut hojas[hoja_idx], hoja_idx + 1)
     }
 
     fn escribir_estructura(&mut self) -> CoreResult<()> {
-        let n = self.hojas.len();
-        let opciones = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
-
-        let overrides: String = (1..=n)
-            .map(|k| {
-                format!(
-                    r#"<Override PartName="/xl/worksheets/sheet{k}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>"#
-                )
-            })
-            .collect();
-        self.zip_mut().start_file("[Content_Types].xml", opciones)?;
-        write!(
-            self.zip_mut(),
-            concat!(
-                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#,
-                r#"<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">"#,
-                r#"<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>"#,
-                r#"<Default Extension="xml" ContentType="application/xml"/>"#,
-                r#"<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>"#,
-                "{overrides}</Types>",
-            ),
-            overrides = overrides
-        )?;
-
-        self.zip_mut().start_file("_rels/.rels", opciones)?;
-        write!(
-            self.zip_mut(),
-            concat!(
-                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#,
-                r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">"#,
-                r#"<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>"#,
-            )
-        )?;
-
-        let hojas_xml: String = self
-            .hojas
-            .iter()
-            .enumerate()
-            .map(|(k, h)| {
-                let k = k + 1;
-                format!(
-                    r#"<sheet name="{}" sheetId="{k}" r:id="rId{k}"/>"#,
-                    Self::escapar_atributo(&h.nombre)
-                )
-            })
-            .collect();
-        self.zip_mut().start_file("xl/workbook.xml", opciones)?;
-        write!(
-            self.zip_mut(),
-            concat!(
-                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#,
-                r#"<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">"#,
-                "<sheets>{hojas_xml}</sheets></workbook>",
-            ),
-            hojas_xml = hojas_xml
-        )?;
-
-        let rels: String = (1..=n)
-            .map(|k| {
-                format!(
-                    r#"<Relationship Id="rId{k}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet{k}.xml"/>"#
-                )
-            })
-            .collect();
-        self.zip_mut()
-            .start_file("xl/_rels/workbook.xml.rels", opciones)?;
-        write!(
-            self.zip_mut(),
-            concat!(
-                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#,
-                r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">"#,
-                "{rels}</Relationships>",
-            ),
-            rels = rels
-        )?;
-        Ok(())
+        let nombres: Vec<String> = self.hojas.iter().map(|h| h.nombre.clone()).collect();
+        paquete::escribir_estructura(&mut self.zip, &nombres)
     }
 }
 
@@ -834,12 +617,11 @@ mod tests {
 
     #[test]
     fn emitir_vacias_trocea_en_bloques_igual_que_emitir_datos() -> CoreResult<()> {
-        // Antes, `emitir_vacias` armaba un único `String` de hasta
-        // `filas_por_hoja` filas de un tirón (sin trocear en `FILAS_POR_BLOQUE`
-        // como sí hace `emitir_datos`) — inconsistente con el diseño de
-        // memoria acotada del resto del módulo. Esta racha de vacías
-        // interiores cruza ese límite, ejerciendo el camino multi-iteración
-        // que introdujo el fix.
+        // `emitir_vacias` debe trocear en `FILAS_POR_BLOQUE` igual que
+        // `emitir_datos`: armar un único `String` de hasta `filas_por_hoja`
+        // filas de un tirón rompería el diseño de memoria acotada del
+        // módulo. Esta racha de vacías interiores cruza ese límite, así que
+        // ejerce el camino multi-iteración.
         let tmp = tempfile::tempdir().unwrap();
         let ruta = tmp.path().join("vacias_grandes.xlsx");
         let opciones = OpcionesEscritorXlsx {
@@ -892,7 +674,10 @@ mod tests {
         use calamine::{open_workbook_auto, Reader};
         let libro = open_workbook_auto(&ruta).unwrap();
         let nombre = &libro.sheet_names()[0];
-        assert!(!nombre.chars().any(|c| CARS_INVALIDOS.contains(&c)));
+        // Literales y no la constante del código: un test que se compara
+        // contra la misma constante que ejercita pasaría igual si alguien la
+        // vaciara por error.
+        assert!(!nombre.contains(['[', ']', ':', '*', '?', '/', '\\']));
         assert!(nombre.chars().count() <= 31);
         Ok(())
     }

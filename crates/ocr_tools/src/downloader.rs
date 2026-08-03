@@ -23,12 +23,12 @@ use std::time::Duration;
 use futures::StreamExt;
 use image::{ImageReader, Limits, RgbImage};
 
-/// Por qué falló una descarga. Antes `fetch` devolvía `Option<Vec<u8>>` y
-/// TODAS estas causas colapsaban en un único `None`, que el llamador
-/// reportaba con un texto fijo ("timeout o URL inválida") — apuntando a los
-/// datos del usuario incluso cuando la causa real era del servidor remoto
-/// (rate-limit, 404) o del propio filtro de seguridad. Con un archivo de
-/// URLs perfectamente válidas eso mandaba a revisar el lugar equivocado.
+/// Por qué falló una descarga. Cada causa es una variante propia y no un
+/// `None` común: colapsarlas obliga al llamador a reportar un texto fijo
+/// ("timeout o URL inválida") que apunta a los datos del usuario incluso
+/// cuando la causa real es del servidor remoto (rate-limit, 404) o del
+/// propio filtro de seguridad — con un archivo de URLs perfectamente
+/// válidas, eso manda a revisar el lugar equivocado.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FalloDescarga {
     /// El texto de la celda no se puede parsear como URL.

@@ -20,9 +20,9 @@ pub(crate) fn ordenar_columna(ruta_salida: &Path) -> AppResult<()> {
     let Some(hojas_excluir) = preguntar_hojas_excluir_de(&archivo, "")? else {
         return Ok(());
     };
-    // Una sola apertura del archivo para columnas + datos — antes
-    // `columnas_union` y `cargar_completo` (vía `iter_hojas_valores`) abrían
-    // el mismo archivo por separado.
+    // Una sola apertura del archivo para columnas + datos: pedir las
+    // columnas aparte con `columnas_union` abriría el mismo archivo dos
+    // veces para lo mismo.
     let bloques = etl_tools::iter_hojas_valores(
         std::slice::from_ref(&archivo),
         Some(&excluir_refs(&hojas_excluir)),

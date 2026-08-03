@@ -26,10 +26,10 @@ pub use parsing::{
 use filtros::{escribir_bucket_procesadas, explotar_coincidencia};
 
 /// Modo de 'Compatibilidades' (el menú lo llama "Compatibilidades") vs
-/// 'Comprimidas' — antes viajaban como literales de texto sueltos por 6
-/// funciones distintas, sin que el compilador detectara un typo en ninguna
-/// de ellas (un literal mal escrito caía en silencio en la rama por defecto
-/// de cada `if`).
+/// 'Comprimidas'. Es un enum y no literales de texto sueltos porque esos
+/// literales viajan por 6 funciones distintas y el compilador no detecta un
+/// typo en ninguna: un literal mal escrito cae en silencio en la rama por
+/// defecto de cada `if`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModoCompatibilidad {
     /// Menú "Compatibilidades": conserva 'Linea' salvo que se pida borrarla.
@@ -53,9 +53,10 @@ const FILAS_POR_SUBBLOQUE: usize = 250_000;
 const FILAS_PRE_EXPLODE: usize = 20_000;
 
 /// Contexto compartido por `procesar_unido`/`despachar_unido`: agrupa lo que
-/// siempre viaja junto entre sub-bloques de un mismo archivo (antes 6
-/// parámetros sueltos por función, con `#[allow(clippy::too_many_arguments)]`
-/// en vez de resolver la señal del propio lint).
+/// siempre viaja junto entre sub-bloques de un mismo archivo. Como struct y
+/// no como 6 parámetros sueltos por función: silenciar
+/// `clippy::too_many_arguments` con un `allow` tapa la señal en vez de
+/// resolverla.
 struct ContextoUnido<'a> {
     columnas_combinar: &'a [String],
     modo: ModoCompatibilidad,

@@ -17,9 +17,9 @@ use crate::downloader::{AsyncImageDownloader, DownloadConfig};
 use crate::url_helper;
 
 /// Por qué [`ImageEmbedder::procesar_archivo`] no generó una salida —
-/// distingue las 3 causas que antes colapsaban en el mismo `None`, para que
+/// distingue las 3 causas en vez de colapsarlas en un mismo `None`, para que
 /// el mensaje al usuario no asuma siempre "sin columnas de URL" cuando en
-/// realidad el archivo estaba corrupto o falló la escritura del destino.
+/// realidad el archivo está corrupto o falló la escritura del destino.
 #[derive(Debug)]
 pub enum MotivoSinProcesar {
     /// El archivo de origen no se pudo abrir (corrupto, no es un .xlsx válido, etc.).
@@ -152,8 +152,8 @@ pub struct ImageEmbedder {
     max_concurrency: usize,
     /// Un solo `reqwest::Client` (con su pool de conexiones) para todo el
     /// archivo, no uno nuevo por hoja: `descargar_todas` se llama una vez por
-    /// hoja (vía `procesar_hoja`) y antes reconstruía el cliente en cada
-    /// llamada, perdiendo el reuso de conexiones entre hojas del mismo libro.
+    /// hoja (vía `procesar_hoja`), y reconstruir el cliente en cada llamada
+    /// perdería el reuso de conexiones entre hojas del mismo libro.
     downloader_cache: tokio::sync::OnceCell<AsyncImageDownloader>,
     /// Correlativo para el nombre de archivo de cada imagen incrustada, único
     /// en TODO el libro (no por hoja: todas comparten el mismo `xl/media/`).

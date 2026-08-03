@@ -13,7 +13,7 @@ use ndarray::Array3;
 use crate::grouping::{FreeBox, HorizontalBox};
 
 /// Aspect ratio siempre >= 1 (invierte si el recorte es más alto que ancho).
-pub fn calculate_ratio(width: f32, height: f32) -> f32 {
+fn calculate_ratio(width: f32, height: f32) -> f32 {
     let r = width / height;
     if r < 1.0 {
         1.0 / r

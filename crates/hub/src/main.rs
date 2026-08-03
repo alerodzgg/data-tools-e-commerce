@@ -12,6 +12,11 @@
 //! (`PUBLICACIONES_ENTRADA`/`PUBLICACIONES_SALIDA`) para que el hijo "vea"
 //! el cambio.
 
+// Cada `src/bin/*` es un crate root propio: NO hereda los lints de `lib.rs`,
+// asi que la politica se repite aca. Un panic en produccion aborta el proceso
+// que ve el usuario; en tests `.unwrap()` es la forma normal de fallar rapido.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -165,9 +170,9 @@ fn configurar_rutas() -> app_shell::FlujoResult<()> {
 
 /// Bucle principal. Devuelve `Err` solo ante un error REAL de menú/input
 /// (`inquire`, etc.) — `main()` lo reporta; un `Ok(())` cubre tanto "Salir"
-/// como la cancelación normal (ESC). Antes, un `Err` real se trataba igual
-/// que ESC (salía en silencio, sin avisar), a diferencia de los otros 5
-/// binarios del workspace, que sí propagan y reportan ese error.
+/// como la cancelación normal (ESC). Un `Err` real NO se trata como ESC
+/// (salir en silencio, sin avisar): los otros 5 binarios del workspace
+/// propagan y reportan ese error, y el hub no puede ser la excepción.
 fn ejecutar() -> app_shell::FlujoResult<()> {
     app_shell::mostrar_cabecera("DATA TOOLS E-COMMERCE");
 

@@ -110,10 +110,10 @@ pub fn preparar_chunk_clave(
 /// pasado por [`preparar_chunk_clave`]) y descarta las filas cuya clave
 /// normalizada quedó vacía (celdas vacías o solo símbolos no cruzan).
 /// `None` si no queda ninguna fila. Compartido entre BUSCARV exacto
-/// (`clave_limpia_de`) y BUSCARV parcial (`norm_parcial`), que antes
-/// repetían este mismo patrón (calcular clave → agregar columna → enmascarar
-/// vacíos → filtrar) de forma casi idéntica, divergiendo solo en el nombre
-/// de columna y la función de normalización.
+/// (`clave_limpia_de`) y BUSCARV parcial (`norm_parcial`): ambos necesitan
+/// el mismo patrón (calcular clave → agregar columna → enmascarar vacíos →
+/// filtrar) y divergen solo en el nombre de columna y la función de
+/// normalización, que llegan por parámetro.
 pub(crate) fn con_clave_normalizada(
     preparado: &DataFrame,
     clave_tabla: &str,

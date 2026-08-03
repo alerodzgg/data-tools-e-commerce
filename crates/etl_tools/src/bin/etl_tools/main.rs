@@ -6,6 +6,11 @@
 //! color de fuente de cada celda, algo que ningún lector de XLSX en el
 //! ecosistema Rust expone hoy (ver el comentario de alcance en `lib.rs`).
 
+// Cada `src/bin/*` es un crate root propio: NO hereda los lints de `lib.rs`,
+// asi que la politica se repite aca. Un panic en produccion aborta el proceso
+// que ve el usuario; en tests `.unwrap()` es la forma normal de fallar rapido.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use app_shell::FlujoError;
 use commerce_core::CoreError;
 

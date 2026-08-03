@@ -29,7 +29,7 @@ fn capitalizar(s: &str) -> String {
 
 /// Características del título (pares opuestos se cancelan entre sí, p. ej.
 /// "Front" + "Rear" en el mismo título no aportan característica).
-pub fn extraer_caracteristicas(titulo: &str) -> String {
+fn extraer_caracteristicas(titulo: &str) -> String {
     let minuscula = titulo.to_lowercase();
     let mut caracteristicas: Vec<&'static str> = Vec::new();
     for palabra in PALABRA.find_iter(&minuscula) {
@@ -58,7 +58,7 @@ pub fn extraer_caracteristicas(titulo: &str) -> String {
 
 /// Cantidad del título con PRIORIDAD FIJA kit > pair > set/pcs: "Pair Kit"
 /// da "Kit" (misma regla en TODOS los modos que llaman a esta función).
-pub fn extraer_cantidades(titulo: &str) -> String {
+fn extraer_cantidades(titulo: &str) -> String {
     let minuscula = titulo.to_lowercase();
     let palabras: HashSet<&str> = PALABRA.find_iter(&minuscula).map(|m| m.as_str()).collect();
     for clave in ["kit", "pair", "set", "pcs"] {
@@ -163,7 +163,7 @@ pub fn separar_por_categorias(
 /// Limpieza de las columnas de imagen: 'video' (cualquier mayúscula) → vacío;
 /// si no, se extrae la URL y se reemplaza el último segmento por
 /// `s-l1600.jpg` (alta resolución). Sin URL reconocible → vacío.
-pub fn limpiar_imagenes(df: &DataFrame) -> CoreResult<DataFrame> {
+fn limpiar_imagenes(df: &DataFrame) -> CoreResult<DataFrame> {
     let mut df = df.clone();
     for &c in COL_IMAGENES.iter() {
         if df.column(c).is_err() {

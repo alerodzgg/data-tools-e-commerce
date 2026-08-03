@@ -1027,12 +1027,10 @@ dependencies = [
  "commerce_core",
  "indicatif",
  "polars",
- "quick-xml 0.41.0",
  "regex",
  "rust_xlsxwriter",
  "tempfile",
  "thiserror 2.0.19",
- "zip 4.6.1",
 ]
 
 [[package]]
@@ -3390,15 +3388,6 @@ checksum = "cdcc8dd4e2f670d309a5f0e83fe36dfdc05af317008fea29144da1a2ac858e5e"
 dependencies = [
  "memchr",
  "serde",
-]
-
-[[package]]
-name = "quick-xml"
-version = "0.41.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e660451e55124f798a69a5af3f49ccfbefbd41910eefd25caf2393e1f3473ec1"
-dependencies = [
- "memchr",
 ]
 
 [[package]]

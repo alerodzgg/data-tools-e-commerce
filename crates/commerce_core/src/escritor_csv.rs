@@ -79,9 +79,9 @@ fn neutralizar_formulas(df: &mut DataFrame) -> CoreResult<()> {
 ///
 /// Alinea cada bloque a la cabecera igual que `EscritorXlsx::alinear`
 /// (faltantes → vacías; sobrantes → se descartan CON AVISO, una vez por
-/// columna): antes, una columna faltante hacía fallar `escribir()` con Err en
-/// vez de alinearse, una asimetría real con `EscritorXlsx` pese a que ambos
-/// prometen ser intercambiables vía `EscritorSalida`.
+/// columna). Una columna faltante se alinea, NO hace fallar `escribir()`: esa
+/// simetría con `EscritorXlsx` es lo que sostiene la promesa de que ambos son
+/// intercambiables vía `EscritorSalida`.
 pub struct EscritorCsv {
     pub ruta: PathBuf,
     columnas: Vec<String>,
@@ -172,12 +172,12 @@ impl EscritorCsv {
     /// Finaliza el CSV. Idempotente (llamarlo dos veces no hace nada).
     ///
     /// Si la escritura de la cabecera final falla, el archivo a medias se
-    /// BORRA acá mismo (igual que `abortar()`) antes de propagar el error:
-    /// antes, `cerrado` se marcaba `true` como primer paso, así que un fallo
-    /// dejaba tanto a `abortar()` como al `Drop` automático neutralizados
-    /// (ambos son no-op si `cerrado` ya es `true`) — el CSV a medias quedaba
-    /// en disco sin ninguna forma de limpiarlo después. Mismo bug que tenía
-    /// `EscritorXlsx::cerrar()` antes de corregirse.
+    /// BORRA acá mismo (igual que `abortar()`) antes de propagar el error, y
+    /// `cerrado` se marca `true` solo AL FINAL: marcarlo como primer paso
+    /// neutralizaría tanto a `abortar()` como al `Drop` automático (ambos son
+    /// no-op si `cerrado` ya es `true`) y el CSV a medias quedaría en disco
+    /// sin ninguna forma de limpiarlo. Mismo criterio que
+    /// `EscritorXlsx::cerrar()`.
     pub fn cerrar(&mut self) -> CoreResult<()> {
         if self.cerrado {
             return Ok(());

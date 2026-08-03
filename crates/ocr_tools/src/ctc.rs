@@ -7,9 +7,9 @@ use ndarray::{Array2, Axis};
 
 /// Vocabulario completo del reconocedor exportado (351 caracteres), en el
 /// mismo orden usado al entrenar/exportar el modelo latin_g2.
-pub const CHARACTERS: &str = include_str!("../models/characters.txt");
+const CHARACTERS: &str = include_str!("../models/characters.txt");
 /// Subconjunto de idioma (es+en) usado para la máscara de idioma.
-pub const LANG_CHARS: &str = include_str!("../models/lang_char.txt");
+const LANG_CHARS: &str = include_str!("../models/lang_char.txt");
 
 /// `CTCLabelConverter::ignore_idx`: en teoría es `[0] + [i+1 for i, _ in
 /// enumerate(separator_char)]`, pero `separator_char` (derivado de la lista

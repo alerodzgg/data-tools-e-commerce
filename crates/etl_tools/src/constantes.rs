@@ -31,7 +31,7 @@ pub const COLUMNAS_RESERVADAS: &[&str] = &[
 
 /// Prefijo reservado de las columnas auxiliares de color de fuente
 /// (`_font_color_<col>`), comprobado aparte porque no es un nombre exacto.
-pub const PREFIJO_RESERVADO: &str = "_font_color_";
+const PREFIJO_RESERVADO: &str = "_font_color_";
 
 /// Columna que añade el modo "Encontrar", siempre al INICIO de la salida.
 pub const COL_ENCONTRADA: &str = "Palabra_encontrada";

@@ -5,8 +5,8 @@ use image::{imageops::FilterType, RgbImage};
 use ndarray::Array3;
 
 /// Media/varianza usadas por CRAFT (ImageNet, orden RGB).
-pub const MEAN: [f32; 3] = [0.485, 0.456, 0.406];
-pub const VARIANCE: [f32; 3] = [0.229, 0.224, 0.225];
+const MEAN: [f32; 3] = [0.485, 0.456, 0.406];
+const VARIANCE: [f32; 3] = [0.229, 0.224, 0.225];
 
 /// Redimensiona el lado mayor a `max_dim` preservando la relación de aspecto
 /// (sin lienzo/relleno, a diferencia de [`resize_aspect_ratio`]); `img` tal

@@ -16,13 +16,13 @@ use crate::lectura::{
 /// ≤ este % de las filas (títulos repetidos, lo normal en publicaciones),
 /// sale más barato normalizar/cruzar/resolver SOLO los distintos y repartir
 /// el resultado con un join.
-pub const UMBRAL_DEDUP_PARCIAL: f64 = 0.6;
+const UMBRAL_DEDUP_PARCIAL: f64 = 0.6;
 
 /// Qué hacer cuando VARIAS claves de la Tabla coinciden en el mismo texto de
-/// la Base — antes viajaba como `&str` ("larga"/"primera"/"todas") por 3
-/// funciones, con cualquier string no reconocido cayendo en silencio en
-/// "primera" (el brazo `_` del match, sin que el compilador pudiera avisar
-/// de un typo en ningún llamador).
+/// la Base. Es un enum y no un `&str` ("larga"/"primera"/"todas") porque con
+/// texto suelto cualquier valor no reconocido cae en silencio en el brazo
+/// `_` del match, sin que el compilador pueda avisar de un typo en ninguno
+/// de los llamadores.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OpcionMultiple {
     /// La coincidencia más larga (más específica).
@@ -305,7 +305,7 @@ pub fn cruzar_chunk_parcial(
 /// adaptativa como parámetro explícito (en vez de una constante de módulo
 /// mutable): permite forzar cada camino (directo / con dedup) desde los
 /// tests sin estado global compartido.
-pub fn cruzar_chunk_parcial_con_umbral(
+fn cruzar_chunk_parcial_con_umbral(
     chunk: &DataFrame,
     clave_base: &str,
     busqueda: &Busqueda,

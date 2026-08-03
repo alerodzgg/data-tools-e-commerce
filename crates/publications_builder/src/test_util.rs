@@ -1,6 +1,5 @@
-//! Helpers de test compartidos por `amazon`, `compatibilidad` y `unicas`
-//! (antes triplicados idénticos en los tres módulos).
-#![cfg(test)]
+//! Helpers de test compartidos por `amazon`, `compatibilidad` y `unicas`,
+//! para no repetir el mismo andamiaje en los tres.
 
 use std::collections::HashMap;
 use std::path::Path;
