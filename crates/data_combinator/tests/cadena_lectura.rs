@@ -79,3 +79,51 @@ fn combinar_no_deforma_los_codigos_de_un_csv_del_workspace() {
 
     assert_eq!(combinar_a_csv(&escritor.ruta, tmp.path(), "desde_csv"), CODIGOS);
 }
+
+#[test]
+fn combinar_con_orden_no_deforma_los_codigos_ni_pierde_filas() {
+    // Con `columna_orden` se activa la MEZCLA EXTERNA: los datos se vuelcan a
+    // CSV temporales y se refunden con un montículo k-vías. Es un camino de
+    // código distinto del de arriba, y el que más manos le pone a los valores.
+    // Dos archivos de entrada para que la fusión llegue a interleavear.
+    let tmp = tempfile::tempdir().unwrap();
+    let mut rutas = Vec::new();
+    for (i, mitad) in [&CODIGOS[..2], &CODIGOS[2..]].iter().enumerate() {
+        let df = df!("Sku" => mitad.to_vec(), "Nombre" => vec!["pieza"; mitad.len()]).unwrap();
+        let mut e = EscritorXlsx::nuevo(
+            tmp.path().join(format!("parte{i}.xlsx")),
+            OpcionesEscritorXlsx::default(),
+        )
+        .unwrap();
+        e.escribir(&df, Some("Datos")).unwrap();
+        e.cerrar().unwrap();
+        rutas.push(e.ruta.clone());
+    }
+
+    let columnas = vec!["Sku".to_string(), "Nombre".to_string()];
+    let excluir = Vec::new();
+    let (salidas, _) = combinar(
+        &OpcionesCombinar {
+            archivos: &rutas,
+            columnas: &columnas,
+            hojas_excluir: &excluir,
+            formato: Formato::Csv,
+            columna_orden: Some("Sku"),
+            ascendente: true,
+            nombre_salida: "ordenado",
+            ruta_salida: tmp.path(),
+            division: Division::Ninguna,
+            umbrales_orden: UmbralesOrden::default(),
+            umbrales_lote_csv: UmbralesLoteCsv::default(),
+        },
+        |_| {},
+        |_| {},
+    )
+    .expect("combinar con orden debe funcionar");
+
+    let mut obtenidos = columna_de(&salidas[0]);
+    obtenidos.sort();
+    let mut esperados: Vec<String> = CODIGOS.iter().map(|c| (*c).to_string()).collect();
+    esperados.sort();
+    assert_eq!(obtenidos, esperados, "la mezcla externa deformó o perdió códigos");
+}

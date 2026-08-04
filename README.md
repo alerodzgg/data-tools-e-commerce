@@ -207,7 +207,7 @@ The workspace never uses a panic as a control-flow mechanism for bad input.
 ### Tests
 
 ```bash
-cargo test --workspace                    # everything (378 tests)
+cargo test --workspace                    # everything (381 tests)
 cargo clippy --workspace --all-targets    # lints, no warnings
 cargo fmt --all --check                   # formatting
 ```
@@ -449,7 +449,7 @@ inválida.
 ### Pruebas
 
 ```bash
-cargo test --workspace                    # todo (378 tests)
+cargo test --workspace                    # todo (381 tests)
 cargo clippy --workspace --all-targets    # lints, sin warnings
 cargo fmt --all --check                   # formato
 ```
