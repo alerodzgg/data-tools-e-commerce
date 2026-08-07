@@ -193,10 +193,8 @@ fn ejecutar() -> AppResult<()> {
         return Ok(());
     }
 
-    let Some(formato) = app_shell::menu_seleccionar_nav(
-        "Formato de salida:",
-        vec![Formato::Xlsx, Formato::Csv, Formato::Ipc],
-    )?
+    let Some(formato) =
+        app_shell::menu_seleccionar_nav("Formato de salida:", vec![Formato::Xlsx, Formato::Csv])?
     else {
         app_shell::info("Hasta luego.");
         return Ok(());

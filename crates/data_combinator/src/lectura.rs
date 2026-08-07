@@ -158,17 +158,7 @@ pub fn iter_chunks(
             .extension()
             .map(|e| e.to_string_lossy().to_lowercase())
             .unwrap_or_default();
-        let resultado: CoreResult<()> = if extension == "ipc" {
-            // Formato de INTERCAMBIO: lo escribió otra herramienta del
-            // workspace, no un humano. Se carga directo a los buffers de
-            // Polars, sin parser de texto de por medio.
-            (|| -> CoreResult<()> {
-                for bloque in commerce_core::leer_ipc(archivo)? {
-                    on_chunk(normalizar(&bloque, columnas)?)?;
-                }
-                Ok(())
-            })()
-        } else if extension == "csv" {
+        let resultado: CoreResult<()> = if extension == "csv" {
             (|| -> CoreResult<()> {
                 let mut lotes = LotesCsv::abrir(archivo, umbral_lote)?;
                 for lote in &mut lotes {

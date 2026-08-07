@@ -19,11 +19,6 @@ const FILAS_POR_SUBBLOQUE_STREAMING: usize = 100_000;
 pub enum Formato {
     Csv,
     Xlsx,
-    /// Arrow IPC: formato de INTERCAMBIO entre herramientas, no de
-    /// presentación. Excel no lo abre; su razón de ser es que el paso
-    /// siguiente del pipeline lo cargue sin parsear texto. Medido sobre 6M de
-    /// celdas, el ciclo escribir+leer cuesta 0,45 s contra 8,9 s del XLSX.
-    Ipc,
 }
 
 /// Texto de menú del binario. Vive acá (no en `bin/`) para que elegir el
@@ -37,10 +32,6 @@ impl fmt::Display for Formato {
         match self {
             Formato::Xlsx => write!(f, "Excel (.xlsx) — multi-hoja automático si excede 1M filas"),
             Formato::Csv => write!(f, "CSV (.csv) — un solo archivo, sin límite de filas"),
-            Formato::Ipc => write!(
-                f,
-                "Arrow IPC (.ipc) — ~20x más rápido, para encadenar con otra herramienta (Excel NO lo abre)"
-            ),
         }
     }
 }
@@ -123,7 +114,6 @@ fn nuevo_escritor(
     filas_por_hoja: usize,
 ) -> CoreResult<Box<dyn EscritorSalida>> {
     Ok(match formato {
-        Formato::Ipc => Box::new(commerce_core::EscritorIpc::nuevo(ruta)?),
         Formato::Csv => Box::new(EscritorCsv::nuevo(ruta, columnas)?),
         Formato::Xlsx => Box::new(EscritorXlsx::nuevo(
             ruta,
@@ -423,7 +413,6 @@ pub fn combinar(
     }
     let extension = match opciones.formato {
         Formato::Csv => "csv",
-        Formato::Ipc => "ipc",
         Formato::Xlsx => "xlsx",
     };
     let base = opciones
