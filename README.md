@@ -71,6 +71,11 @@ Linux) — it looks for both folders next to its own executable at **runtime**
 (`ocr_tools::assets_dir()`), so the compiled binary can be moved or packaged
 without being tied to the checkout.
 
+**Both folders are copied there automatically** by `ocr_tools`'s build script,
+which skips files already present at the same size — so a rebuild costs
+nothing. Everything needed to run lives in `target/<profile>/`: copy that
+directory anywhere and the tools work, with no Rust toolchain installed.
+
 `--release` is not optional in practice: without it, Polars and the OCR
 pipeline run substantially slower.
 
@@ -306,6 +311,12 @@ Los binarios quedan en `target/release/` (uno por herramienta, más `hub`).
 `libonnxruntime.so` en Linux) — busca ambas carpetas junto a su propio
 ejecutable en tiempo de **EJECUCIÓN** (`ocr_tools::assets_dir()`), así que el
 binario compilado se puede mover o empaquetar sin quedar atado al checkout.
+
+**Las dos carpetas se copian ahí solas**, vía el script de compilación de
+`ocr_tools`, que saltea los archivos que ya están con el mismo tamaño — así
+recompilar no cuesta nada. Todo lo necesario para ejecutar vive en
+`target/<perfil>/`: copiás esa carpeta a donde quieras y las herramientas
+funcionan, sin tener Rust instalado.
 
 `--release` no es opcional en la práctica: sin él, Polars y el pipeline de OCR
 corren bastante más lento.
