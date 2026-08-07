@@ -1,4 +1,5 @@
 use polars::prelude::*;
+use std::fmt::Write;
 
 use crate::error::CoreResult;
 
@@ -25,6 +26,25 @@ pub(crate) fn col_letra(n: usize) -> String {
 /// secuencia de `replace_all` no hay riesgo de reescapar el `&` de `&lt;`.
 pub(crate) fn escapar_texto_xml(texto: &str) -> String {
     let mut salida = String::with_capacity(texto.len());
+    escapar_texto_xml_en(&mut salida, texto);
+    salida
+}
+
+/// Igual que [`escapar_texto_xml`], pero escribiendo en `salida`.
+///
+/// La versión que devuelve `String` asigna una vez por celda, y en un archivo
+/// de millones de filas eso es la mayor parte del trabajo del serializador.
+/// Además toma un camino rápido: si el texto no tiene nada que escapar —el
+/// caso de la enorme mayoría de las celdas— se copia de una sola vez en vez
+/// de carácter por carácter.
+pub(crate) fn escapar_texto_xml_en(salida: &mut String, texto: &str) {
+    if !texto
+        .bytes()
+        .any(|b| b == b'&' || b == b'<' || b == b'>' || (b < 0x20 && !matches!(b, b'\t' | b'\n' | b'\r')))
+    {
+        salida.push_str(texto);
+        return;
+    }
     for c in texto.chars() {
         match c {
             '&' => salida.push_str("&amp;"),
@@ -35,7 +55,6 @@ pub(crate) fn escapar_texto_xml(texto: &str) -> String {
             c => salida.push(c),
         }
     }
-    salida
 }
 
 /// Serializa UNA celda como inline string (todo texto: los SKUs y códigos
@@ -60,6 +79,21 @@ pub(crate) fn celda_xml(valor: Option<&str>, columna: usize, fila: usize) -> Str
             }
         }
     }
+}
+
+/// Escribe UNA celda no vacía directamente en `salida`.
+///
+/// Camino caliente del serializador: todo se escribe en el búfer destino, sin
+/// `String` intermedios para la referencia ni para el texto escapado.
+fn escribir_celda_en(salida: &mut String, texto: &str, letra: &str, fila: usize) {
+    let espacio_al_borde = texto.starts_with(' ') || texto.ends_with(' ');
+    let _ = write!(salida, r#"<c r="{letra}{fila}" t="inlineStr"><is><t"#);
+    if espacio_al_borde {
+        salida.push_str(r#" xml:space="preserve""#);
+    }
+    salida.push('>');
+    escapar_texto_xml_en(salida, texto);
+    salida.push_str("</t></is></c>");
 }
 
 /// Serializa una fila a partir de valores en memoria (cabecera, filas vacías).
@@ -109,12 +143,18 @@ pub(crate) fn serializar_bloque_xml(
     let mut salida = String::with_capacity(n * 32);
     let mut iters: Vec<_> = chunked.iter().map(polars::prelude::ChunkedArray::iter).collect();
 
+    // La letra de cada columna no cambia entre filas: calcularla una vez por
+    // bloque en vez de una vez por celda ahorra una asignación por celda, que
+    // a millones de filas es el grueso del trabajo.
+    let letras: Vec<String> = (1..=columnas.len()).map(col_letra).collect();
+
     for desplazamiento in 0..n {
         let fila = fila_inicial + desplazamiento;
-        salida.push_str(&format!(r#"<row r="{fila}">"#));
+        let _ = write!(salida, r#"<row r="{fila}">"#);
         for (i, it) in iters.iter_mut().enumerate() {
-            let valor = it.next().flatten();
-            salida.push_str(&celda_xml(valor, i + 1, fila));
+            if let Some(texto) = it.next().flatten().filter(|t| !t.is_empty()) {
+                escribir_celda_en(&mut salida, texto, &letras[i], fila);
+            }
         }
         salida.push_str("</row>");
     }

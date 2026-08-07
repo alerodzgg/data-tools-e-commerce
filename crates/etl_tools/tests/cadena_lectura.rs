@@ -97,3 +97,15 @@ fn pasar_dos_veces_por_csv_no_acumula_apostrofos() {
         "una segunda pasada por CSV volvió a deformar los valores"
     );
 }
+
+#[test]
+fn etl_tools_lee_el_formato_de_intercambio_sin_deformar_los_codigos() {
+    // Cierra la cadena en la otra dirección: lo que `data_combinator` deja en
+    // IPC tiene que poder entrar a `etl_tools` sin pasar por texto.
+    let tmp = tempfile::tempdir().unwrap();
+    let mut escritor = commerce_core::EscritorIpc::nuevo(tmp.path().join("intercambio.ipc")).unwrap();
+    escritor.escribir(&df_codigos(), None).unwrap();
+    escritor.cerrar().unwrap();
+
+    assert_eq!(leidos(&escritor.ruta), CODIGOS);
+}

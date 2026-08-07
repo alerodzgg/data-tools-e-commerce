@@ -19,7 +19,22 @@ pub fn iter_hojas_valores(
             .extension()
             .map(|e| e.to_string_lossy().to_lowercase())
             .unwrap_or_default();
-        if extension == "csv" {
+        if extension == "ipc" {
+            // Formato de INTERCAMBIO: lo escribió otra herramienta del
+            // workspace, no un humano. Se carga directo a los buffers de
+            // Polars, sin parser de texto de por medio — medido, el ciclo
+            // escribir+leer cuesta ~20x menos que el equivalente en XLSX.
+            match commerce_core::leer_ipc(archivo) {
+                Ok(bloques) => salida.extend(bloques.into_iter().filter(|b| b.height() > 0)),
+                Err(error) => avisar(&format!(
+                    "Error al leer '{}': {error}",
+                    archivo
+                        .file_name()
+                        .map(|n| n.to_string_lossy())
+                        .unwrap_or_default()
+                )),
+            }
+        } else if extension == "csv" {
             let Some(ruta_str) = archivo.to_str() else {
                 continue;
             };

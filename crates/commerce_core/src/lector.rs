@@ -20,6 +20,38 @@ fn normalizar_excluir(excluir: Option<&[&str]>) -> HashSet<String> {
 /// Convierte una celda de calamine a su representación de texto canónica.
 /// Todo se trata como texto: los SKUs y códigos como '007' nunca se
 /// reinterpretan como números.
+/// Escribe la representación textual de `valor` en `salida`. Devuelve `false`
+/// si la celda está vacía (no escribe nada).
+///
+/// Variante en el sitio de [`celda_a_texto`], para el camino caliente: leer un
+/// archivo grande son millones de celdas y una asignación por cada una es la
+/// mayor parte del costo.
+fn celda_a_texto_en(salida: &mut String, valor: &Data) -> bool {
+    use std::fmt::Write;
+    match valor {
+        Data::Empty => return false,
+        Data::String(s) | Data::DateTimeIso(s) | Data::DurationIso(s) => salida.push_str(s),
+        Data::Int(i) => {
+            let _ = write!(salida, "{i}");
+        }
+        Data::Float(f) => {
+            if f.fract() == 0.0 && f.abs() < 1e15 {
+                let _ = write!(salida, "{}", *f as i64);
+            } else {
+                let _ = write!(salida, "{f}");
+            }
+        }
+        Data::Bool(b) => salida.push_str(if *b { "TRUE" } else { "FALSE" }),
+        Data::DateTime(dt) => {
+            let _ = write!(salida, "{dt}");
+        }
+        Data::Error(e) => {
+            let _ = write!(salida, "{e:?}");
+        }
+    }
+    true
+}
+
 fn celda_a_texto(valor: &Data) -> Option<String> {
     match valor {
         Data::Empty => None,
@@ -53,18 +85,42 @@ pub(crate) fn hoja_a_dataframe(rango: &Range<Data>) -> CoreResult<DataFrame> {
     };
     let nombres = nombres_cabecera(cabecera.iter().map(celda_a_texto));
 
-    let ancho = nombres.len();
-    let mut columnas: Vec<Vec<Option<String>>> = vec![Vec::new(); ancho];
+    let alto = rango.height().saturating_sub(1); // sin la cabecera
+
+    // Se construye directo sobre el buffer contiguo de Arrow. La versión que
+    // pasaba por un `Vec<Option<String>>` por columna pagaba tres veces cada
+    // celda: una asignación de `String`, el crecimiento sin capacidad
+    // reservada del `Vec`, y la copia final que polars hace al convertirlo a
+    // su representación interna. Acá el texto de una celda de tipo cadena se
+    // copia UNA vez, del origen al buffer final.
+    let mut constructores: Vec<StringChunkedBuilder> = nombres
+        .iter()
+        .map(|nombre| StringChunkedBuilder::new(nombre.as_str().into(), alto))
+        .collect();
+
+    // Reutilizado para las celdas que no son texto (números, fechas): se
+    // formatean acá y se copian al buffer, sin asignar una por una.
+    let mut scratch = String::new();
     for fila in filas {
-        for (i, columna) in columnas.iter_mut().enumerate() {
-            columna.push(fila.get(i).and_then(celda_a_texto));
+        for (i, constructor) in constructores.iter_mut().enumerate() {
+            match fila.get(i) {
+                Some(Data::String(texto)) => constructor.append_value(texto.as_str()),
+                Some(dato) => {
+                    scratch.clear();
+                    if celda_a_texto_en(&mut scratch, dato) {
+                        constructor.append_value(scratch.as_str());
+                    } else {
+                        constructor.append_null();
+                    }
+                }
+                None => constructor.append_null(),
+            }
         }
     }
 
-    let series: Vec<Column> = nombres
+    let series: Vec<Column> = constructores
         .into_iter()
-        .zip(columnas)
-        .map(|(nombre, valores)| Column::new(nombre.into(), valores))
+        .map(|c| c.finish().into_series().into())
         .collect();
     let df = DataFrame::new_infer_height(series)?;
     renombrar_canonico(df).map_err(Into::into)
@@ -82,6 +138,16 @@ pub fn iter_hojas_xlsx(
     mut avisar: impl FnMut(&str),
 ) -> Vec<DataFrame> {
     let excluir = normalizar_excluir(excluir);
+
+    // Camino rápido para los `.xlsx` que escribe este mismo workspace: leerlos
+    // con `calamine` cuesta ~2,6x más que recorrer su XML directamente, y la
+    // generalidad que justifica esa diferencia no se usa acá. Ante cualquier
+    // estructura que no reconozca devuelve `None` y se sigue por el camino de
+    // siempre — el costo de no reconocer es leer lento, nunca leer mal.
+    if let Some(bloques) = crate::lector_rapido::leer_hojas(archivo, &excluir) {
+        return bloques;
+    }
+
     let mut salida = Vec::new();
 
     let mut libro = match open_workbook_auto(archivo) {

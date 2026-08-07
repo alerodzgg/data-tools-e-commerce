@@ -3,6 +3,7 @@ use std::path::Path;
 use polars::prelude::DataFrame;
 
 use crate::error::CoreResult;
+use crate::escritor_columnar::EscritorIpc;
 use crate::escritor_csv::EscritorCsv;
 use crate::escritor_xlsx::EscritorXlsx;
 
@@ -44,6 +45,24 @@ impl EscritorSalida for EscritorCsv {
     }
     fn abortar(&mut self) -> CoreResult<()> {
         EscritorCsv::abortar(self)
+    }
+    fn ruta(&self) -> &Path {
+        &self.ruta
+    }
+    fn total(&self) -> usize {
+        self.total
+    }
+}
+
+impl EscritorSalida for EscritorIpc {
+    fn escribir(&mut self, df: &DataFrame, hoja: Option<&str>) -> CoreResult<()> {
+        EscritorIpc::escribir(self, df, hoja)
+    }
+    fn cerrar(&mut self) -> CoreResult<()> {
+        EscritorIpc::cerrar(self)
+    }
+    fn abortar(&mut self) -> CoreResult<()> {
+        EscritorIpc::abortar(self)
     }
     fn ruta(&self) -> &Path {
         &self.ruta

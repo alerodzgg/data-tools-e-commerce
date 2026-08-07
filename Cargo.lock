@@ -649,6 +649,7 @@ dependencies = [
  "encoding_rs",
  "polars",
  "proptest",
+ "quick-xml 0.37.5",
  "regex",
  "rust_xlsxwriter",
  "tempfile",
