@@ -3,8 +3,36 @@ use polars::prelude::*;
 
 use crate::constantes::TOKENS_NULOS;
 
+/// Largo del token nulo más largo (`"none"`, `"null"` → 4; `"n/a"` → 3).
+/// Se calcula en compilación para que agregar un token a `TOKENS_NULOS` no
+/// exija acordarse de actualizar este número.
+const LARGO_MAX_TOKEN: usize = {
+    let mut max = 0;
+    let mut i = 0;
+    while i < TOKENS_NULOS.len() {
+        if TOKENS_NULOS[i].len() > max {
+            max = TOKENS_NULOS[i].len();
+        }
+        i += 1;
+    }
+    max
+};
+
+/// Se llama una vez por CELDA, así que el costo por llamada es el costo del
+/// pipeline entero: sobre 3,6M de celdas, la versión con `to_lowercase()`
+/// asignaba un `String` en cada una solo para preguntar.
+///
+/// Ahora: primero un filtro por largo —que descarta la enorme mayoría de las
+/// celdas con una sola comparación de enteros— y después una comparación sin
+/// distinguir mayúsculas que no asigna nada.
 fn es_token_nulo(valor: &str) -> bool {
-    TOKENS_NULOS.contains(&valor.trim().to_lowercase().as_str())
+    let recortado = valor.trim();
+    if recortado.is_empty() || recortado.len() > LARGO_MAX_TOKEN {
+        return false;
+    }
+    TOKENS_NULOS
+        .iter()
+        .any(|token| token.eq_ignore_ascii_case(recortado))
 }
 
 /// Alinea el chunk a `columnas` (rellena las faltantes con vacío), normaliza
