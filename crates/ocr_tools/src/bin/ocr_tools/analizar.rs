@@ -22,6 +22,15 @@ use app_shell::FlujoError;
 /// Procesa UN archivo de punta a punta: unión de columnas, checkpoint,
 /// resolución de columnas URL, y una hoja a la vez (lee → analiza → escribe
 /// → libera), igual que `FileWorkflow.run`.
+/// Descargas simultáneas contra el servidor de imágenes.
+///
+/// Vale 32 porque es lo que usaba la versión en Python de esta herramienta,
+/// que funcionaba contra las mismas URLs. Se probó bajarlo a 6 sospechando
+/// del throttling de los CDN: no cambió nada, así que la hipótesis quedó
+/// descartada y el valor volvió al original.
+const DESCARGAS_SIMULTANEAS: usize = 32;
+
+
 async fn ejecutar_archivo(
     xlsx_path: &Path,
     pipeline: Arc<ImagePipeline>,
@@ -71,7 +80,7 @@ async fn ejecutar_archivo(
         DownloadConfig::default(),
         1,
         std::time::Duration::from_millis(250),
-        32,
+        DESCARGAS_SIMULTANEAS,
         500,
     );
 

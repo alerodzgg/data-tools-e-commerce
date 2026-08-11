@@ -20,7 +20,6 @@ use std::fmt;
 use std::net::{IpAddr, ToSocketAddrs};
 use std::time::Duration;
 
-use futures::StreamExt;
 use image::{ImageReader, Limits, RgbImage};
 
 /// Por qué falló una descarga. Cada causa es una variante propia y no un
@@ -346,19 +345,33 @@ async fn leer_bytes_acotado(resp: reqwest::Response) -> Result<Vec<u8>, FalloDes
 /// siempre es `MAX_RESPUESTA_BYTES`; separado así para poder ejercitar el
 /// corte con cuerpos de test chicos y rápidos).
 async fn leer_bytes_acotado_con_cota(resp: reqwest::Response, cota: usize) -> Result<Vec<u8>, FalloDescarga> {
+    // Rechazo temprano por lo que el servidor DECLARA, antes de traer nada.
     if resp.content_length().is_some_and(|n| n as usize > cota) {
         return Err(FalloDescarga::DemasiadoGrande);
     }
-    let mut buf = Vec::new();
-    let mut stream = std::pin::pin!(resp.bytes_stream());
-    while let Some(trozo) = stream.next().await {
-        let trozo = trozo.map_err(|_| FalloDescarga::CuerpoIncompleto)?;
-        if buf.len() + trozo.len() > cota {
-            return Err(FalloDescarga::DemasiadoGrande);
+
+    // El cuerpo se lee ENTERO de una, no por trozos.
+    //
+    // La versión anterior iteraba `bytes_stream()`, y cualquier error a mitad
+    // del recorrido salía como `CuerpoIncompleto`. La versión en Python de
+    // esta misma herramienta —misma configuración de User-Agent, timeout,
+    // reintentos y concurrencia— usaba `resp.read()` y funcionaba contra las
+    // mismas URLs, así que el streaming es la única diferencia de
+    // comportamiento que queda en esta capa.
+    let bytes = resp.bytes().await.map_err(|error| {
+        if error.is_timeout() {
+            FalloDescarga::Timeout
+        } else {
+            FalloDescarga::CuerpoIncompleto
         }
-        buf.extend_from_slice(&trozo);
+    })?;
+
+    // Segundo tope, por lo que REALMENTE llegó: un servidor puede mentir en
+    // `Content-Length` o no declararlo.
+    if bytes.len() > cota {
+        return Err(FalloDescarga::DemasiadoGrande);
     }
-    Ok(buf)
+    Ok(bytes.to_vec())
 }
 
 /// Decodifica bytes crudos a RGB y opcionalmente reduce a `resize_max_dim`

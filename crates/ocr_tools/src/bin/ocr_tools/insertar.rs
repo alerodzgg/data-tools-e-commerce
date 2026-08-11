@@ -8,9 +8,17 @@ use ocr_tools::image_embedder::{ImageEmbedConfig, ImageEmbedder, MotivoSinProces
 
 use crate::AppResult;
 
+/// Descargas simultáneas contra el servidor de imágenes.
+///
+/// Vale 32 porque es lo que usaba la versión en Python de esta herramienta,
+/// que funcionaba contra las mismas URLs. Se probó bajarlo a 6 sospechando
+/// del throttling de los CDN: no cambió nada, así que la hipótesis quedó
+/// descartada y el valor volvió al original.
+const DESCARGAS_SIMULTANEAS: usize = 32;
+
 pub(crate) async fn insertar_imagenes_en_archivos(archivos: &[PathBuf]) -> AppResult<()> {
     let hojas_excluir = app_shell::preguntar_hojas_excluir(archivos, "")?.unwrap_or_default();
-    let embedder = ImageEmbedder::new(ImageEmbedConfig::default(), DownloadConfig::default(), 32);
+    let embedder = ImageEmbedder::new(ImageEmbedConfig::default(), DownloadConfig::default(), DESCARGAS_SIMULTANEAS);
     let out_dir = app_shell::ruta_salida();
 
     for archivo in archivos {
