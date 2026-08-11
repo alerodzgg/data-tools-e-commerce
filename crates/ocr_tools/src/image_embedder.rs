@@ -295,26 +295,51 @@ impl ImageEmbedder {
             }
         };
 
-        let indexados: Vec<(usize, Option<RgbImage>)> = stream::iter(tareas.iter().enumerate())
+        let indexados: Vec<(usize, Result<RgbImage, String>)> = stream::iter(tareas.iter().enumerate())
             .map(|(i, tarea)| async move {
                 // Este modo INSERTA imágenes en el xlsx: una que no se pudo
                 // traer simplemente queda sin insertar (se reporta agregada
                 // como "N con error" al final), así que acá solo interesa
                 // si hay bytes o no — la causa concreta del fallo la usa el
                 // modo de ANÁLISIS, que sí escribe un motivo por fila.
-                let imagen = match downloader.fetch(&tarea.url).await {
-                    Ok(bytes) => self.decodificar_y_redimensionar(&bytes),
-                    Err(_fallo) => None,
+                // El motivo se conserva: descartarlo dejaba al usuario con
+                // una columna de celdas que dicen "Error" y nada más, sin
+                // forma de saber si el problema es la red, el servidor o el
+                // contenido — que se arreglan de maneras distintas.
+                let resultado = match downloader.fetch(&tarea.url).await {
+                    Ok(bytes) => match self.decodificar_y_redimensionar(&bytes) {
+                        Some(imagen) => Ok(imagen),
+                        None => Err("descargada, pero no es una imagen válida".to_string()),
+                    },
+                    Err(fallo) => Err(fallo.to_string()),
                 };
-                (i, imagen)
+                (i, resultado)
             })
             .buffer_unordered(self.max_concurrency.max(1))
             .collect()
             .await;
 
         let mut resultados: Vec<Option<RgbImage>> = (0..tareas.len()).map(|_| None).collect();
-        for (i, img) in indexados {
-            resultados[i] = img;
+        // Los motivos se agrupan y se informan UNA vez: un aviso por imagen
+        // fallida ahogaría la consola, y lo que el usuario necesita para
+        // decidir qué hacer es el reparto de causas, no el detalle de cada
+        // fila.
+        let mut motivos: HashMap<String, usize> = HashMap::new();
+        for (i, resultado) in indexados {
+            match resultado {
+                Ok(imagen) => resultados[i] = Some(imagen),
+                Err(motivo) => *motivos.entry(motivo).or_insert(0) += 1,
+            }
+        }
+        if !motivos.is_empty() {
+            let mut reparto: Vec<(String, usize)> = motivos.into_iter().collect();
+            reparto.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+            let detalle = reparto
+                .iter()
+                .map(|(motivo, n)| format!("{n} × {motivo}"))
+                .collect::<Vec<_>>()
+                .join("; ");
+            avisar(&format!("Imágenes que no se pudieron insertar — {detalle}"));
         }
         resultados
     }

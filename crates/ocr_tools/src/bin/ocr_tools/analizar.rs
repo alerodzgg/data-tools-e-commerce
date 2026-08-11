@@ -30,7 +30,6 @@ use app_shell::FlujoError;
 /// descartada y el valor volvió al original.
 const DESCARGAS_SIMULTANEAS: usize = 32;
 
-
 async fn ejecutar_archivo(
     xlsx_path: &Path,
     pipeline: Arc<ImagePipeline>,

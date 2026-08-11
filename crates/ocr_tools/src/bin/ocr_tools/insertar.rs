@@ -18,7 +18,11 @@ const DESCARGAS_SIMULTANEAS: usize = 32;
 
 pub(crate) async fn insertar_imagenes_en_archivos(archivos: &[PathBuf]) -> AppResult<()> {
     let hojas_excluir = app_shell::preguntar_hojas_excluir(archivos, "")?.unwrap_or_default();
-    let embedder = ImageEmbedder::new(ImageEmbedConfig::default(), DownloadConfig::default(), DESCARGAS_SIMULTANEAS);
+    let embedder = ImageEmbedder::new(
+        ImageEmbedConfig::default(),
+        DownloadConfig::default(),
+        DESCARGAS_SIMULTANEAS,
+    );
     let out_dir = app_shell::ruta_salida();
 
     for archivo in archivos {
