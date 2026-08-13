@@ -208,6 +208,14 @@ The workspace never uses a panic as a control-flow mechanism for bad input.
   the number of columns inserted is capped at Excel's real limit (16 384) and
   the surplus is reported instead of producing a file Excel silently refuses to
   open.
+- **Image downloads are deliberately slow.** Insertion runs 8 concurrent
+  downloads, not 32. This is not a conservative guess: measured against
+  `i.ebayimg.com`, 32 made all 29 images of a real file fail with timeouts, and
+  the CDN kept punishing the following runs (15 ok, then 0, then 0). The server
+  tolerates paced requests and tarpits bursts — it accepts the connection and
+  never answers — so the limit here is its patience, not our bandwidth. Raising
+  the number back makes the tool *appear* faster and deliver nothing. Retries
+  back off exponentially for the same reason.
 
 ### Tests
 
@@ -456,6 +464,15 @@ inválida.
   la cantidad de columnas insertadas tiene como tope el límite real de Excel
   (16 384) y el sobrante se reporta, en vez de producir un archivo que Excel se
   niega a abrir sin decir por qué.
+- **Las descargas de imágenes son lentas a propósito.** La inserción usa 8
+  descargas simultáneas, no 32. No es una estimación prudente: medido contra
+  `i.ebayimg.com`, con 32 fallaban por timeout las 29 imágenes de un archivo
+  real y el CDN seguía castigando las corridas siguientes (15 ok, después 0,
+  después 0). El servidor tolera pedidos espaciados y hace *tarpit* con las
+  ráfagas —acepta la conexión y nunca responde—, así que acá el límite es su
+  paciencia, no nuestro ancho de banda. Subir el número otra vez hace que la
+  herramienta *parezca* más rápida y no entregue nada. Los reintentos usan
+  backoff exponencial por la misma razón.
 
 ### Pruebas
 
