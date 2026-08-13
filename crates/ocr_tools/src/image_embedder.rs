@@ -77,7 +77,11 @@ impl Default for ImageEmbedConfig {
         Self {
             ancho_px: 118,
             alto_px: 168,
-            intentos_descarga: 2,
+            // 3 intentos, los mismos que usa el modo de análisis. Con 2 la
+            // inserción era estrictamente más frágil que el análisis contra
+            // el mismo servidor: bajo throttling, ese intento de menos era la
+            // diferencia entre insertar la imagen y reportar un timeout.
+            intentos_descarga: 3,
             texto_error: "Error".to_string(),
             max_muestra_deteccion: 10,
             umbral_deteccion: 0.30,

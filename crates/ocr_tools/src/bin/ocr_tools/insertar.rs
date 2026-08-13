@@ -10,11 +10,13 @@ use crate::AppResult;
 
 /// Descargas simultáneas contra el servidor de imágenes.
 ///
-/// Vale 32 porque es lo que usaba la versión en Python de esta herramienta,
-/// que funcionaba contra las mismas URLs. Se probó bajarlo a 6 sospechando
-/// del throttling de los CDN: no cambió nada, así que la hipótesis quedó
-/// descartada y el valor volvió al original.
-const DESCARGAS_SIMULTANEAS: usize = 32;
+/// Vale 8 y no 32 por medición contra `i.ebayimg.com`: con 32, las 29
+/// imágenes de un archivo real fallaban por timeout y el servidor seguía
+/// cortando las corridas siguientes (15 ok, después 0, después 0). Con 8 las
+/// 29 entraron completas. El CDN tolera pedidos espaciados y tarpitea las
+/// ráfagas, así que acá el límite no es nuestro ancho de banda sino su
+/// paciencia.
+const DESCARGAS_SIMULTANEAS: usize = 8;
 
 pub(crate) async fn insertar_imagenes_en_archivos(archivos: &[PathBuf]) -> AppResult<()> {
     let hojas_excluir = app_shell::preguntar_hojas_excluir(archivos, "")?.unwrap_or_default();

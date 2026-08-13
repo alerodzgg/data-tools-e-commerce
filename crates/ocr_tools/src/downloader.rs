@@ -312,7 +312,11 @@ impl AsyncImageDownloader {
                     }
                 }
             }
-            tokio::time::sleep(self.cfg.backoff * (intento + 1)).await;
+            // Exponencial, no lineal: cuando el servidor está limitando el
+            // ritmo, volver enseguida alarga el castigo. Duplicar da tiempo
+            // real a que la ventana de throttling se libere.
+            let espera = self.cfg.backoff * 2u32.saturating_pow(intento);
+            tokio::time::sleep(espera).await;
         }
         Err(ultimo_fallo)
     }
