@@ -52,9 +52,9 @@ pub(crate) async fn insertar_imagenes_en_archivos(archivos: &[PathBuf]) -> AppRe
             Err(MotivoSinProcesar::SinColumnasDeUrl) => app_shell::warn(&format!(
                 "'{nombre}': no se detectaron columnas con URLs de imagen. Nada que hacer."
             )),
-            Err(MotivoSinProcesar::ArchivoCorrupto) => app_shell::error(&format!(
-                "'{nombre}': no se pudo abrir (¿está corrupto o no es un .xlsx válido?)."
-            )),
+            Err(MotivoSinProcesar::NoSePudoAbrir(detalle)) => {
+                app_shell::error(&format!("'{nombre}': no se pudo abrir ({detalle})."))
+            }
             Err(MotivoSinProcesar::ArchivoDemasiadoGrande) => app_shell::error(&format!(
                 "'{nombre}': excede el límite de tamaño/descompresión permitido para insertar imágenes. \
                  No se procesa."

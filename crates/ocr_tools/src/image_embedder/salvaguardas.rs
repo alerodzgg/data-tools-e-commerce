@@ -36,8 +36,10 @@ fn verificar_tamano_xlsx_con_limites(
     max_uncompressed: u64,
     max_entries: usize,
 ) -> Result<(), MotivoSinProcesar> {
-    let archivo = std::fs::File::open(ruta).map_err(|_| MotivoSinProcesar::ArchivoCorrupto)?;
-    let mut zip = zip::ZipArchive::new(archivo).map_err(|_| MotivoSinProcesar::ArchivoCorrupto)?;
+    let archivo =
+        std::fs::File::open(ruta).map_err(|error| MotivoSinProcesar::NoSePudoAbrir(error.to_string()))?;
+    let mut zip =
+        zip::ZipArchive::new(archivo).map_err(|error| MotivoSinProcesar::NoSePudoAbrir(error.to_string()))?;
     if zip.len() > max_entries {
         return Err(MotivoSinProcesar::ArchivoDemasiadoGrande);
     }
@@ -45,7 +47,7 @@ fn verificar_tamano_xlsx_con_limites(
     for i in 0..zip.len() {
         let entrada = zip
             .by_index_raw(i)
-            .map_err(|_| MotivoSinProcesar::ArchivoCorrupto)?;
+            .map_err(|error| MotivoSinProcesar::NoSePudoAbrir(error.to_string()))?;
         total = total.saturating_add(entrada.size());
         if total > max_uncompressed {
             return Err(MotivoSinProcesar::ArchivoDemasiadoGrande);

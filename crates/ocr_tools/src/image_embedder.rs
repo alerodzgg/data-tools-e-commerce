@@ -22,8 +22,15 @@ use crate::url_helper;
 /// realidad el archivo está corrupto o falló la escritura del destino.
 #[derive(Debug)]
 pub enum MotivoSinProcesar {
-    /// El archivo de origen no se pudo abrir (corrupto, no es un .xlsx válido, etc.).
-    ArchivoCorrupto,
+    /// El archivo de origen no se pudo abrir, con el detalle de POR QUÉ.
+    ///
+    /// Lleva la causa adentro porque "no se pudo abrir" cubre situaciones que
+    /// se arreglan de formas distintas: el archivo no existe, no hay permisos,
+    /// o el zip está realmente corrupto. Colapsarlas en un mensaje único ya
+    /// costó horas de diagnóstico: cuando `EscritorXlsx` omitía `styles.xml`,
+    /// `umya` devolvía `Zip(FileNotFound)` —que señalaba el defecto propio— y
+    /// se reportaba como "archivo corrupto" del usuario.
+    NoSePudoAbrir(String),
     /// El archivo excede los límites de tamaño/descompresión de
     /// [`verificar_tamano_xlsx_seguro`] — se rechaza sin llegar a
     /// materializarlo completo en memoria.
@@ -458,7 +465,8 @@ impl ImageEmbedder {
         mut avisar: impl FnMut(&str),
     ) -> Result<(PathBuf, usize, usize, usize), MotivoSinProcesar> {
         verificar_tamano_xlsx_seguro(ruta)?;
-        let mut libro = xlsx::reader::xlsx::read(ruta).map_err(|_| MotivoSinProcesar::ArchivoCorrupto)?;
+        let mut libro = xlsx::reader::xlsx::read(ruta)
+            .map_err(|error| MotivoSinProcesar::NoSePudoAbrir(error.to_string()))?;
         restaurar_texto_original(&mut libro, ruta);
 
         let mut total_exitos = 0usize;
@@ -724,7 +732,7 @@ mod tests {
             .procesar_archivo(&origen, &HashSet::new(), &destino, |_| {})
             .await
             .expect_err("un archivo corrupto no debe procesarse");
-        assert!(matches!(error, MotivoSinProcesar::ArchivoCorrupto));
+        assert!(matches!(error, MotivoSinProcesar::NoSePudoAbrir(_)));
     }
     #[tokio::test]
     async fn procesar_archivo_sin_columnas_de_url_devuelve_ese_motivo() {

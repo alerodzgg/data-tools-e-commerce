@@ -267,6 +267,9 @@ impl AsyncImageDownloader {
     /// último fallo visto, no uno genérico.
     pub async fn fetch(&self, url: &str) -> Result<Vec<u8>, FalloDescarga> {
         let url = url.trim();
+        // causa-descartada: el error de `url` describe la sintaxis rota
+        // ("relative URL without a base"), que no le dice nada al usuario
+        // ni cambia qué hacer: la URL de la celda está mal escrita.
         let parsed = reqwest::Url::parse(url).map_err(|_| FalloDescarga::UrlInvalida)?;
         #[cfg(any(test, feature = "test-support"))]
         let host_ok = self.permitir_hosts_privados || host_es_publico(&parsed).await;
