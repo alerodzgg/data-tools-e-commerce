@@ -64,11 +64,29 @@ pub(super) fn volcar_hoja(
     zip.write_all(XML_DECL.as_bytes())?;
     zip.write_all(br#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">"#)?;
     zip.write_all(dimension.as_bytes())?;
+    zip.write_all(SHEET_FORMAT_PR.as_bytes())?;
     zip.write_all(b"<sheetData>")?;
     hoja.tmp.volcar_en(zip)?;
     zip.write_all(b"</sheetData></worksheet>")?;
     Ok(())
 }
+
+/// Formato de hoja por defecto.
+///
+/// Omitir `<sheetFormatPr>` es legal —ECMA-376 lo marca opcional— pero se
+/// vuelve inválido al pasar por `umya-spreadsheet`: al no encontrarlo, umya
+/// materializa la estructura vacía y reescribe `<sheetFormatPr/>` SIN
+/// `defaultRowHeight`, que sí es obligatorio. Excel entonces repara el
+/// archivo al abrirlo ("línea 2, columna 515").
+///
+/// Es el mismo patrón que `ESTILOS_MINIMOS`: nuestra omisión es legal
+/// aislada, y se rompe cuando la siguiente herramienta reescribe el libro.
+/// Emitirlo con un valor real corta la cadena en el origen.
+///
+/// Va DESPUÉS de `<dimension>` y ANTES de `<cols>`/`<sheetData>`: el esquema
+/// fija ese orden y un elemento fuera de secuencia también dispara la
+/// reparación.
+const SHEET_FORMAT_PR: &str = r#"<sheetFormatPr defaultRowHeight="15"/>"#;
 
 /// Hoja de estilos mínima.
 ///
@@ -81,10 +99,16 @@ pub(super) fn volcar_hoja(
 ///
 /// Dos `fill` y no uno: Excel reserva el índice 0 para `none` y el 1 para
 /// `gray125`, y rechaza el libro si el segundo falta.
+///
+/// Dos `font` por una razón parecida, pero de otra herramienta:
+/// `umya-spreadsheet` escribe `<phoneticPr fontId="1"/>` al reescribir la
+/// hoja, sin verificar que ese índice exista. Con una sola fuente declarada,
+/// esa referencia apunta al vacío y el libro queda inválido.
 const ESTILOS_MINIMOS: &str = concat!(
     r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#,
     r#"<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">"#,
-    r#"<fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts>"#,
+    r#"<fonts count="2"><font><sz val="11"/><name val="Calibri"/></font>"#,
+    r#"<font><sz val="11"/><name val="Calibri"/></font></fonts>"#,
     r#"<fills count="2"><fill><patternFill patternType="none"/></fill>"#,
     r#"<fill><patternFill patternType="gray125"/></fill></fills>"#,
     r#"<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>"#,
