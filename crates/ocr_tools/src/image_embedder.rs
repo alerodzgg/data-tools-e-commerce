@@ -168,6 +168,32 @@ fn restaurar_celda(hoja: &mut Worksheet, col: u32, fila: u32, texto: &str) {
     }
 }
 
+/// Garantiza que cada hoja lleve `defaultRowHeight` en su `<sheetFormatPr>`.
+///
+/// `umya` SIEMPRE emite `<sheetFormatPr>` al escribir, con los atributos que
+/// tenga cargados: si el origen no traía el elemento —es OPCIONAL en OOXML, y
+/// `EscritorXlsx` no lo escribe— sale `<sheetFormatPr/>` pelado. Pero
+/// `defaultRowHeight` es OBLIGATORIO en `CT_SheetFormatPr`, así que Excel
+/// rechaza la hoja entera ("Load error. Línea 2, columna N") y "repara" el
+/// libro TIRANDO `sheet1.xml`; con él se va el `<drawing>` y, por lo tanto,
+/// TODAS las imágenes recién insertadas.
+///
+/// Le pegaba justo al caso normal —insertar sobre la salida del modo de
+/// análisis, que la escribe `EscritorXlsx`— y los tests no lo veían porque
+/// arman el origen con `rust_xlsxwriter`/`umya`, que sí escriben
+/// `defaultRowHeight` y hacen que el round-trip salga válido.
+///
+/// 15 puntos es el alto de fila por defecto de Excel. Solo se toca si no
+/// venía nada: `umya` devuelve `0.0` cuando el valor está sin cargar.
+fn asegurar_default_row_height(libro: &mut xlsx::Spreadsheet) {
+    for ws in libro.get_sheet_collection_mut() {
+        let props = ws.get_sheet_format_properties_mut();
+        if *props.get_default_row_height() <= 0.0 {
+            props.set_default_row_height(15.0);
+        }
+    }
+}
+
 impl ImageEmbedder {
     pub fn new(cfg: ImageEmbedConfig, mut download_cfg: DownloadConfig, max_concurrency: usize) -> Self {
         // "se intentará doble vez" = 2 intentos TOTALES = 1 reintento.
@@ -495,6 +521,7 @@ impl ImageEmbedder {
         // devuelven la ruta real; esta función ya devolvía un `PathBuf`, así
         // que hacerlo acá la alinea sin cambiarle la firma.
         let destino = commerce_core::ruta_unica(destino);
+        asegurar_default_row_height(&mut libro);
         if xlsx::writer::xlsx::write(&libro, &destino).is_err() {
             // Un fallo a mitad de escritura deja un .xlsx corrupto: se borra,
             // igual que hace `abortar()` en los escritores propios.
@@ -782,6 +809,60 @@ mod tests {
         let releido = xlsx::reader::xlsx::read(&ruta).unwrap();
         let hoja = releido.get_sheet(&0).unwrap();
         assert_eq!(hoja.get_image_collection().len(), 1);
+    }
+    #[tokio::test]
+    async fn la_salida_lleva_default_row_height_aunque_el_origen_no_traiga_sheet_format_pr() {
+        // Regresión: el origen real de este modo es la salida del modo de
+        // análisis, que escribe `EscritorXlsx` — y ese escritor NO emite
+        // `<sheetFormatPr>` (es opcional en OOXML). `umya` sí lo emite
+        // siempre al escribir, y sin nada cargado salía `<sheetFormatPr/>`
+        // pelado, sin el `defaultRowHeight` que el esquema exige: Excel
+        // rechazaba la hoja ("Load error"), la reparaba tirándola entera y
+        // con ella se iban TODAS las imágenes recién insertadas.
+        //
+        // El origen se arma con `EscritorXlsx` a propósito: con
+        // `rust_xlsxwriter`/`umya` —que sí escriben `defaultRowHeight`— el
+        // round-trip salía válido y el defecto no aparecía.
+        let tmp = tempfile::tempdir().unwrap();
+        let origen = {
+            use commerce_core::{EscritorXlsx, OpcionesEscritorXlsx};
+            use polars::prelude::*;
+            let mut escritor =
+                EscritorXlsx::nuevo(tmp.path().join("origen.xlsx"), OpcionesEscritorXlsx::default()).unwrap();
+            let df = df!("Sku" => ["A1"], "Fotos" => [servidor_mock_imagen()]).unwrap();
+            escritor.escribir(&df, None).unwrap();
+            let ruta = escritor.ruta.clone();
+            escritor.cerrar().unwrap();
+            ruta
+        };
+
+        let embedder = ImageEmbedder::new(ImageEmbedConfig::default(), DownloadConfig::default(), 4);
+        let destino = tmp.path().join("con_imagenes.xlsx");
+        let (ruta, exitos, fallos, _hojas) = embedder
+            .procesar_archivo(&origen, &HashSet::new(), &destino, |_| {})
+            .await
+            .expect("debe procesar la hoja");
+        assert_eq!((exitos, fallos), (1, 0));
+
+        // Se mira el XML del paquete, no el libro releído: `umya` volvería a
+        // aceptar su propio `<sheetFormatPr/>` sin atributos, que es
+        // justamente lo que Excel rechaza.
+        let archivo = std::fs::File::open(&ruta).unwrap();
+        let mut zip = zip::ZipArchive::new(archivo).unwrap();
+        let mut xml = String::new();
+        zip.by_name("xl/worksheets/sheet1.xml")
+            .unwrap()
+            .read_to_string(&mut xml)
+            .unwrap();
+        let inicio = xml
+            .find("<sheetFormatPr")
+            .expect("umya siempre emite el elemento");
+        let fin = xml[inicio..].find('>').unwrap() + inicio;
+        assert!(
+            xml[inicio..=fin].contains("defaultRowHeight"),
+            "sheetFormatPr sin defaultRowHeight: Excel repara el libro y borra las imágenes ({})",
+            &xml[inicio..=fin]
+        );
     }
     #[tokio::test]
     async fn dos_urls_distintas_producen_dos_imagenes_distintas_en_el_xlsx() {
