@@ -77,6 +77,22 @@ pub struct ImageEmbedConfig {
     pub texto_error: String,
     pub max_muestra_deteccion: usize,
     pub umbral_deteccion: f32,
+    /// Calendario de reintentos: cuánto esperar antes de CADA pasada extra
+    /// sobre lo que quedó fallando. Vacío = una sola pasada.
+    ///
+    /// El throttling del CDN es por IP y por tiempo, no por URL: mientras la
+    /// ventana de castigo está abierta fallan todas, y gastar más intentos
+    /// adentro de esa ventana no cambia nada. Lo que sí sirve es esperar a
+    /// que se cierre.
+    ///
+    /// Las esperas CRECEN porque no se sabe cuánto dura el castigo: si a los
+    /// 60s sigue cerrado, insistir cada 60s solo confirma el bloqueo. Y el
+    /// ciclo corta apenas no queda nada pendiente, así que un calendario
+    /// largo no cuesta tiempo cuando la red anda bien.
+    ///
+    /// Pensado para corridas DESATENDIDAS (de noche, en un servidor): quien
+    /// lanza el proceso no está para reintentar a mano.
+    pub esperas_reintento: Vec<std::time::Duration>,
 }
 
 impl Default for ImageEmbedConfig {
@@ -92,6 +108,18 @@ impl Default for ImageEmbedConfig {
             texto_error: "Error".to_string(),
             max_muestra_deteccion: 10,
             umbral_deteccion: 0.30,
+            // Bajo test no hay reintentos diferidos: varios tests fallan
+            // las descargas a propósito (127.0.0.1 sin servidor) y las
+            // pausas reales convertirían la suite en minutos de sleep.
+            esperas_reintento: if cfg!(any(test, feature = "test-support")) {
+                Vec::new()
+            } else {
+                // ~51 min en total si nunca se recupera; 0 si no falla nada.
+                [60, 300, 900, 1800]
+                    .into_iter()
+                    .map(std::time::Duration::from_secs)
+                    .collect()
+            },
         }
     }
 }
@@ -109,6 +137,12 @@ pub struct ImageEmbedder {
     /// en TODO el libro (no por hoja: todas comparten el mismo `xl/media/`).
     /// Ver [`Self::nombre_imagen_unico`].
     siguiente_imagen: std::sync::atomic::AtomicUsize,
+}
+
+/// Por qué falló una imagen, y si tiene sentido reintentarla más tarde.
+struct FalloTarea {
+    motivo: String,
+    vale_reintentar: bool,
 }
 
 /// Restaura el texto de las celdas que `umya-spreadsheet` convirtió a número
@@ -298,6 +332,44 @@ impl ImageEmbedder {
     // ── Paso 4: descargar + redimensionar, concurrencia acotada ──────────
     /// Devuelve, por índice de tarea, la imagen ya redimensionada o `None` si
     /// falló tras agotar los intentos (esa tarea escribirá `texto_error`).
+    /// Un intento de descarga+decodificación para los índices dados.
+    ///
+    /// Recibe qué índices intentar —no siempre son todos— porque la segunda
+    /// pasada reintenta solo lo que falló.
+    async fn intentar_lote(
+        &self,
+        downloader: &AsyncImageDownloader,
+        tareas: &[TareaImagen],
+        indices: Vec<usize>,
+    ) -> Vec<(usize, Result<RgbImage, FalloTarea>)> {
+        stream::iter(indices)
+            .map(|i| async move {
+                // El motivo se conserva: descartarlo dejaba al usuario con
+                // una columna de celdas que dicen "Error" y nada más, sin
+                // forma de saber si el problema es la red, el servidor o el
+                // contenido — que se arreglan de maneras distintas.
+                let resultado = match downloader.fetch(&tareas[i].url).await {
+                    Ok(bytes) => match self.decodificar_y_redimensionar(&bytes) {
+                        Some(imagen) => Ok(imagen),
+                        // Los bytes ya llegaron: si no son una imagen, no lo
+                        // van a ser en el próximo intento.
+                        None => Err(FalloTarea {
+                            motivo: "descargada, pero no es una imagen válida".to_string(),
+                            vale_reintentar: false,
+                        }),
+                    },
+                    Err(fallo) => Err(FalloTarea {
+                        motivo: fallo.to_string(),
+                        vale_reintentar: fallo.vale_reintentar_mas_tarde(),
+                    }),
+                };
+                (i, resultado)
+            })
+            .buffer_unordered(self.max_concurrency.max(1))
+            .collect()
+            .await
+    }
+
     async fn descargar_todas(
         &self,
         tareas: &[TareaImagen],
@@ -332,29 +404,41 @@ impl ImageEmbedder {
             }
         };
 
-        let indexados: Vec<(usize, Result<RgbImage, String>)> = stream::iter(tareas.iter().enumerate())
-            .map(|(i, tarea)| async move {
-                // Este modo INSERTA imágenes en el xlsx: una que no se pudo
-                // traer simplemente queda sin insertar (se reporta agregada
-                // como "N con error" al final), así que acá solo interesa
-                // si hay bytes o no — la causa concreta del fallo la usa el
-                // modo de ANÁLISIS, que sí escribe un motivo por fila.
-                // El motivo se conserva: descartarlo dejaba al usuario con
-                // una columna de celdas que dicen "Error" y nada más, sin
-                // forma de saber si el problema es la red, el servidor o el
-                // contenido — que se arreglan de maneras distintas.
-                let resultado = match downloader.fetch(&tarea.url).await {
-                    Ok(bytes) => match self.decodificar_y_redimensionar(&bytes) {
-                        Some(imagen) => Ok(imagen),
-                        None => Err("descargada, pero no es una imagen válida".to_string()),
-                    },
-                    Err(fallo) => Err(fallo.to_string()),
-                };
-                (i, resultado)
-            })
-            .buffer_unordered(self.max_concurrency.max(1))
-            .collect()
-            .await;
+        let indices: Vec<usize> = (0..tareas.len()).collect();
+        let mut indexados = self.intentar_lote(downloader, tareas, indices).await;
+
+        // Pasadas extra: solo lo que quedó fallando, con esperas crecientes.
+        for (pasada, espera) in self.cfg.esperas_reintento.iter().enumerate() {
+            // Solo lo transitorio: un 404 o una URL rota va a fallar igual
+            // dentro de media hora, y reintentarlo gasta el calendario.
+            let fallidas: Vec<usize> = indexados
+                .iter()
+                .filter(|(_, r)| matches!(r, Err(f) if f.vale_reintentar))
+                .map(|(i, _)| *i)
+                .collect();
+            if fallidas.is_empty() {
+                break;
+            }
+            avisar(&format!(
+                "Quedan {} sin descargar; esperando {}s antes del reintento {} de {}...",
+                fallidas.len(),
+                espera.as_secs(),
+                pasada + 1,
+                self.cfg.esperas_reintento.len()
+            ));
+            tokio::time::sleep(*espera).await;
+            let recuperadas = self.intentar_lote(downloader, tareas, fallidas).await;
+            let logradas = recuperadas.iter().filter(|(_, r)| r.is_ok()).count();
+            if logradas > 0 {
+                avisar(&format!("Recuperadas en el reintento {}: {logradas}", pasada + 1));
+            }
+            // El resultado nuevo pisa al anterior para esos índices.
+            for (i, resultado) in recuperadas {
+                if let Some(hueco) = indexados.iter_mut().find(|(j, _)| *j == i) {
+                    hueco.1 = resultado;
+                }
+            }
+        }
 
         let mut resultados: Vec<Option<RgbImage>> = (0..tareas.len()).map(|_| None).collect();
         // Los motivos se agrupan y se informan UNA vez: un aviso por imagen
@@ -365,7 +449,7 @@ impl ImageEmbedder {
         for (i, resultado) in indexados {
             match resultado {
                 Ok(imagen) => resultados[i] = Some(imagen),
-                Err(motivo) => *motivos.entry(motivo).or_insert(0) += 1,
+                Err(fallo) => *motivos.entry(fallo.motivo).or_insert(0) += 1,
             }
         }
         if !motivos.is_empty() {
@@ -572,6 +656,133 @@ mod tests {
             }
         });
         format!("http://127.0.0.1:{puerto}/img.png")
+    }
+
+    /// Servidor que RECHAZA los primeros `fallos` pedidos y despues sirve la
+    /// imagen. Imita al CDN que hace *tarpit* mientras dura su ventana de
+    /// castigo y responde normal una vez que se cierra.
+    fn servidor_mock_que_falla_primero(fallos: usize) -> String {
+        let bytes = {
+            let img = RgbImage::from_pixel(20, 20, image::Rgb([7, 7, 7]));
+            let mut buf = std::io::Cursor::new(Vec::new());
+            img.write_to(&mut buf, image::ImageFormat::Png).unwrap();
+            buf.into_inner()
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let puerto = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let mut vistos = 0usize;
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let mut buf = [0u8; 1024];
+                let _ = stream.read(&mut buf);
+                vistos += 1;
+                if vistos <= fallos {
+                    // 503 es reintentable, igual que un CDN saturado.
+                    let _ = stream.write_all(
+                        b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    );
+                    continue;
+                }
+                let cabecera = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    bytes.len()
+                );
+                let _ = stream.write_all(cabecera.as_bytes());
+                let _ = stream.write_all(&bytes);
+            }
+        });
+        format!("http://127.0.0.1:{puerto}/img.png")
+    }
+
+    /// Servidor que siempre responde 404 y cuenta cuántos pedidos recibió.
+    fn servidor_mock_404() -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let puerto = listener.local_addr().unwrap().port();
+        let vistos = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let contador = std::sync::Arc::clone(&vistos);
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let mut buf = [0u8; 1024];
+                let _ = stream.read(&mut buf);
+                contador.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let _ = stream
+                    .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            }
+        });
+        (format!("http://127.0.0.1:{puerto}/no-esta.png"), vistos)
+    }
+
+    #[tokio::test]
+    async fn un_fallo_permanente_no_consume_el_calendario_de_reintentos() {
+        // Una imagen que no existe no va a existir dentro de media hora. Si
+        // el ciclo la reintentara, una corrida desatendida se quedaría casi
+        // una hora esperando por algo que ya está decidido.
+        let tmp = tempfile::tempdir().unwrap();
+        let origen = tmp.path().join("origen.xlsx");
+        let (url, vistos) = servidor_mock_404();
+        {
+            let mut libro = libro_de_prueba();
+            let ws = libro.get_sheet_by_name_mut("Sheet1").unwrap();
+            ws.get_cell_mut((1, 1)).set_value("Fotos");
+            ws.get_cell_mut((1, 2)).set_value(&url);
+            xlsx::writer::xlsx::write(&libro, &origen).unwrap();
+        }
+
+        let cfg = ImageEmbedConfig {
+            esperas_reintento: vec![std::time::Duration::from_millis(50); 3],
+            ..ImageEmbedConfig::default()
+        };
+        let embedder = ImageEmbedder::new(cfg, DownloadConfig::default(), 4);
+        let (_, exitos, fallos, _) = embedder
+            .procesar_archivo(&origen, &HashSet::new(), &tmp.path().join("salida.xlsx"), |_| {})
+            .await
+            .expect("debe procesar");
+
+        assert_eq!(exitos, 0);
+        assert_eq!(fallos, 1);
+        assert_eq!(
+            vistos.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "un 404 se pidió más de una vez: el calendario se gastó en algo que no puede cambiar"
+        );
+    }
+
+    #[tokio::test]
+    async fn la_segunda_pasada_recupera_lo_que_fallo_en_la_primera() {
+        // La herramienta corre sola de punta a punta: si el CDN nos contiene
+        // durante la primera pasada, el usuario no puede esperar y reintentar
+        // a mano. Sin esta segunda pasada, esas imágenes se pierden aunque el
+        // servidor vuelva a responder un minuto después.
+        let tmp = tempfile::tempdir().unwrap();
+        let origen = tmp.path().join("origen.xlsx");
+        // Falla todos los intentos de la primera pasada; la segunda encuentra
+        // el servidor ya recuperado.
+        let url = servidor_mock_que_falla_primero(3);
+        {
+            let mut libro = libro_de_prueba();
+            let ws = libro.get_sheet_by_name_mut("Sheet1").unwrap();
+            ws.get_cell_mut((1, 1)).set_value("Fotos");
+            ws.get_cell_mut((1, 2)).set_value(&url);
+            xlsx::writer::xlsx::write(&libro, &origen).unwrap();
+        }
+
+        let cfg = ImageEmbedConfig {
+            esperas_reintento: vec![std::time::Duration::from_millis(50)],
+            ..ImageEmbedConfig::default()
+        };
+        let embedder = ImageEmbedder::new(cfg, DownloadConfig::default(), 4);
+        let (salida, exitos, fallos, _) = embedder
+            .procesar_archivo(&origen, &HashSet::new(), &tmp.path().join("salida.xlsx"), |_| {})
+            .await
+            .expect("debe procesar");
+
+        assert_eq!(fallos, 0, "la segunda pasada tenía que recuperarla");
+        assert_eq!(exitos, 1);
+        let libro = xlsx::reader::xlsx::read(&salida).unwrap();
+        let hoja = libro.get_sheet(&0).unwrap();
+        assert_eq!(hoja.get_image_collection().len(), 1);
     }
 
     #[tokio::test]

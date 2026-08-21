@@ -50,6 +50,25 @@ pub enum FalloDescarga {
     CuerpoIncompleto,
 }
 
+impl FalloDescarga {
+    /// Si volver a intentarlo más tarde puede cambiar el resultado.
+    ///
+    /// Un 404 o una URL mal escrita van a fallar igual dentro de una hora:
+    /// reintentarlos gasta el calendario de esperas sin ninguna chance de
+    /// éxito. Lo que sí puede cambiar es un servidor que nos está limitando
+    /// el ritmo, una red caída o un 5xx pasajero.
+    pub fn vale_reintentar_mas_tarde(&self) -> bool {
+        match self {
+            // Transitorios: dependen del estado de la red o del servidor.
+            Self::Timeout | Self::ErrorDeRed | Self::CuerpoIncompleto => true,
+            Self::Http(codigo) => (500..600).contains(codigo) || *codigo == 429,
+            // Permanentes: el resultado ya está determinado por la URL o por
+            // lo que hay del otro lado.
+            Self::UrlInvalida | Self::HostBloqueado | Self::NoEsImagen | Self::DemasiadoGrande => false,
+        }
+    }
+}
+
 impl fmt::Display for FalloDescarga {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -192,6 +211,15 @@ pub struct DownloadConfig {
     pub pool_maxsize: usize,
     pub user_agent: String,
     pub backoff: Duration,
+    /// Espera base cuando el fallo fue un TIMEOUT, en vez de `backoff`.
+    ///
+    /// Un 503 y un timeout piden esperas de escalas distintas: el primero es
+    /// un tropiezo del servidor y se resuelve en segundos; el segundo, contra
+    /// un CDN que limita el ritmo, significa que nos está haciendo *tarpit*
+    /// —acepta la conexión y no responde— y esa ventana dura minutos.
+    /// Reintentar a los 0,5s solo gasta el presupuesto de intentos contra una
+    /// puerta cerrada.
+    pub backoff_timeout: Duration,
     /// Si la imagen decodificada excede esta cota (lado mayor) se reduce.
     /// `None` desactiva el resize.
     pub resize_max_dim: Option<u32>,
@@ -205,6 +233,7 @@ impl Default for DownloadConfig {
             pool_maxsize: 64,
             user_agent: "Mozilla/5.0 AutoparteQC/2.0".to_string(),
             backoff: Duration::from_secs_f64(0.5),
+            backoff_timeout: Duration::from_secs(8),
             resize_max_dim: Some(1280),
         }
     }
@@ -318,7 +347,16 @@ impl AsyncImageDownloader {
             // Exponencial, no lineal: cuando el servidor está limitando el
             // ritmo, volver enseguida alarga el castigo. Duplicar da tiempo
             // real a que la ventana de throttling se libere.
-            let espera = self.cfg.backoff * 2u32.saturating_pow(intento);
+            //
+            // La base depende de QUÉ falló: un timeout indica que el servidor
+            // nos está conteniendo, y ahí los 0,5s de `backoff` reintentan
+            // dentro de la misma ventana de castigo.
+            let base = if matches!(ultimo_fallo, FalloDescarga::Timeout) {
+                self.cfg.backoff_timeout
+            } else {
+                self.cfg.backoff
+            };
+            let espera = base * 2u32.saturating_pow(intento);
             tokio::time::sleep(espera).await;
         }
         Err(ultimo_fallo)
@@ -441,6 +479,7 @@ mod tests {
             timeout: Duration::from_secs(2),
             retries: 2,
             backoff: Duration::from_millis(5),
+            backoff_timeout: Duration::from_millis(5),
             ..DownloadConfig::default()
         }
     }
