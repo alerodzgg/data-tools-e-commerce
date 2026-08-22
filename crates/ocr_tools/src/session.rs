@@ -75,11 +75,64 @@ fn con_batch_1(input: Array3<f32>) -> ort::Result<Array4<f32>> {
         .map_err(|e| ort::Error::new(format!("forma inesperada del tensor de entrada: {e}")))
 }
 
+/// Constructor de sesiones ONNX con GPU si la hay, CPU si no.
+///
+/// La detección es EN TIEMPO DE EJECUCIÓN, no de compilación: el mismo
+/// binario tiene que servir en una instancia con CUDA y en una portátil sin
+/// GPU. `ort` registra los proveedores en orden y saltea en silencio el que
+/// no puede inicializar, así que CUDA primero y CPU como piso.
+///
+/// Con `load-dynamic`, que CUDA funcione depende de qué biblioteca de
+/// ONNX Runtime haya en `runtime/`: la build de CPU no trae el proveedor y
+/// el registro falla sin romper nada. Por eso se avisa qué quedó activo —
+/// una corrida de horas en CPU cuando se pagó por una GPU tiene que ser
+/// visible, no una sorpresa al final.
+fn sesion_con_aceleracion() -> ort::Result<ort::session::builder::SessionBuilder> {
+    use ort::execution_providers::{CUDAExecutionProvider, ExecutionProvider};
+
+    let builder = Session::builder()?;
+    let cuda = CUDAExecutionProvider::default();
+    // `is_available()` puede entrar en pánico si la biblioteca de ONNX
+    // Runtime no coincide en versión; acá eso significa "sin GPU", no
+    // "abortar". Ver `hay_aceleracion_gpu`.
+    let disponible = std::panic::catch_unwind(|| cuda.is_available().unwrap_or(false)).unwrap_or(false);
+    if disponible {
+        // `.build()` no falla acá aunque el proveedor no arranque: `ort` lo
+        // reporta y sigue con el siguiente. El piso siempre es CPU.
+        return builder.with_execution_providers([cuda.build()]);
+    }
+    Ok(builder)
+}
+
+/// Si hay aceleración por GPU disponible en esta máquina.
+///
+/// Para que la CLI lo informe una vez al arrancar, en vez de que el usuario
+/// lo deduzca del tiempo que tarda.
+///
+/// Nunca propaga un fallo: no poder AVERIGUAR si hay GPU no es motivo para
+/// abortar una corrida que en CPU funciona igual. Dos resguardos, porque
+/// `ort` falla de dos formas distintas acá:
+///
+/// 1. Inicializa el runtime primero. Sin eso, `ort` carga la primera
+///    `onnxruntime` que encuentre en el sistema en vez de la de `runtime/`.
+/// 2. Atrapa el pánico: ante una versión incompatible de la biblioteca
+///    (p.ej. 1.17 donde se espera 1.22), `ort` entra en PÁNICO en vez de
+///    devolver `Err`, y esto se llama al arrancar una corrida de horas.
+pub fn hay_aceleracion_gpu() -> bool {
+    use ort::execution_providers::{CUDAExecutionProvider, ExecutionProvider};
+
+    if asegurar_runtime_inicializado().is_err() {
+        return false;
+    }
+    std::panic::catch_unwind(|| CUDAExecutionProvider::default().is_available().unwrap_or(false))
+        .unwrap_or(false)
+}
+
 impl Detector {
     pub fn new(model_path: impl AsRef<Path>) -> ort::Result<Self> {
         asegurar_runtime_inicializado()?;
         Ok(Self {
-            session: Session::builder()?.commit_from_file(model_path)?,
+            session: sesion_con_aceleracion()?.commit_from_file(model_path)?,
         })
     }
 
@@ -124,7 +177,7 @@ impl Recognizer {
     pub fn new(model_path: impl AsRef<Path>) -> ort::Result<Self> {
         asegurar_runtime_inicializado()?;
         Ok(Self {
-            session: Session::builder()?.commit_from_file(model_path)?,
+            session: sesion_con_aceleracion()?.commit_from_file(model_path)?,
         })
     }
 
@@ -197,5 +250,17 @@ mod tests {
         assert_eq!(probs.shape()[1], 352);
         let fila0: f32 = probs.index_axis(ndarray::Axis(0), 0).iter().sum();
         assert!((fila0 - 1.0).abs() < 1e-3, "softmax debe sumar 1, dio {fila0}");
+    }
+}
+
+#[cfg(test)]
+mod tests_aceleracion {
+    /// No afirma SI hay GPU —depende de la máquina— sino que preguntarlo no
+    /// entra en pánico ni cuelga. La detección corre en el arranque de una
+    /// corrida de horas: fallar ahí sería peor que no tener GPU.
+    #[test]
+    fn preguntar_por_la_gpu_no_rompe_en_ninguna_maquina() {
+        let hay = super::hay_aceleracion_gpu();
+        println!("aceleracion GPU detectada en esta maquina: {hay}");
     }
 }

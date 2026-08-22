@@ -133,6 +133,13 @@ pub struct ImageEmbedder {
     /// hoja (vía `procesar_hoja`), y reconstruir el cliente en cada llamada
     /// perdería el reuso de conexiones entre hojas del mismo libro.
     downloader_cache: tokio::sync::OnceCell<AsyncImageDownloader>,
+    /// Esperas de reintento que quedan disponibles para TODO el archivo.
+    ///
+    /// Compartidas entre hojas a propósito: `descargar_todas` corre una vez
+    /// por hoja, así que un calendario por hoja multiplicaría el techo de
+    /// espera por la cantidad de hojas — un libro de 10 esperaría 10 veces
+    /// lo declarado.
+    esperas_pendientes: tokio::sync::Mutex<std::collections::VecDeque<std::time::Duration>>,
     /// Correlativo para el nombre de archivo de cada imagen incrustada, único
     /// en TODO el libro (no por hoja: todas comparten el mismo `xl/media/`).
     /// Ver [`Self::nombre_imagen_unico`].
@@ -232,11 +239,13 @@ impl ImageEmbedder {
     pub fn new(cfg: ImageEmbedConfig, mut download_cfg: DownloadConfig, max_concurrency: usize) -> Self {
         // "se intentará doble vez" = 2 intentos TOTALES = 1 reintento.
         download_cfg.retries = cfg.intentos_descarga.saturating_sub(1);
+        let esperas: std::collections::VecDeque<_> = cfg.esperas_reintento.iter().copied().collect();
         Self {
             cfg,
             download_cfg,
             max_concurrency,
             downloader_cache: tokio::sync::OnceCell::new(),
+            esperas_pendientes: tokio::sync::Mutex::new(esperas),
             siguiente_imagen: std::sync::atomic::AtomicUsize::new(0),
         }
     }
@@ -332,6 +341,11 @@ impl ImageEmbedder {
     // ── Paso 4: descargar + redimensionar, concurrencia acotada ──────────
     /// Devuelve, por índice de tarea, la imagen ya redimensionada o `None` si
     /// falló tras agotar los intentos (esa tarea escribirá `texto_error`).
+    /// Toma la siguiente espera del presupuesto del archivo, si queda alguna.
+    async fn tomar_siguiente_espera(&self) -> Option<std::time::Duration> {
+        self.esperas_pendientes.lock().await.pop_front()
+    }
+
     /// Un intento de descarga+decodificación para los índices dados.
     ///
     /// Recibe qué índices intentar —no siempre son todos— porque la segunda
@@ -340,9 +354,9 @@ impl ImageEmbedder {
         &self,
         downloader: &AsyncImageDownloader,
         tareas: &[TareaImagen],
-        indices: Vec<usize>,
+        indices: &[usize],
     ) -> Vec<(usize, Result<RgbImage, FalloTarea>)> {
-        stream::iter(indices)
+        stream::iter(indices.iter().copied())
             .map(|i| async move {
                 // El motivo se conserva: descartarlo dejaba al usuario con
                 // una columna de celdas que dicen "Error" y nada más, sin
@@ -404,39 +418,48 @@ impl ImageEmbedder {
             }
         };
 
-        let indices: Vec<usize> = (0..tareas.len()).collect();
-        let mut indexados = self.intentar_lote(downloader, tareas, indices).await;
+        // Indexado directo, no búsqueda lineal: con cientos de miles de
+        // imágenes un `find()` por elemento convierte el merge en O(n²).
+        let mut estado: Vec<Option<Result<RgbImage, FalloTarea>>> = (0..tareas.len()).map(|_| None).collect();
+        let todas: Vec<usize> = (0..tareas.len()).collect();
+        for (i, resultado) in self.intentar_lote(downloader, tareas, &todas).await {
+            estado[i] = Some(resultado);
+        }
 
-        // Pasadas extra: solo lo que quedó fallando, con esperas crecientes.
-        for (pasada, espera) in self.cfg.esperas_reintento.iter().enumerate() {
-            // Solo lo transitorio: un 404 o una URL rota va a fallar igual
-            // dentro de media hora, y reintentarlo gasta el calendario.
-            let fallidas: Vec<usize> = indexados
+        // Pasadas extra sobre lo que quedó fallando, con esperas crecientes.
+        //
+        // El calendario es del ARCHIVO, no de cada hoja: se consume de un
+        // presupuesto compartido. Si fuera por hoja, un libro de 10 hojas
+        // podría esperar 10 veces el techo declarado.
+        loop {
+            let pendientes: Vec<usize> = estado
                 .iter()
-                .filter(|(_, r)| matches!(r, Err(f) if f.vale_reintentar))
-                .map(|(i, _)| *i)
+                .enumerate()
+                // Solo lo transitorio: un 404 o una URL rota va a fallar
+                // igual dentro de media hora, y reintentarlo gasta el
+                // calendario en algo que ya está decidido.
+                .filter(|(_, r)| matches!(r, Some(Err(f)) if f.vale_reintentar))
+                .map(|(i, _)| i)
                 .collect();
-            if fallidas.is_empty() {
+            if pendientes.is_empty() {
                 break;
             }
+            let Some(espera) = self.tomar_siguiente_espera().await else {
+                break;
+            };
             avisar(&format!(
-                "Quedan {} sin descargar; esperando {}s antes del reintento {} de {}...",
-                fallidas.len(),
-                espera.as_secs(),
-                pasada + 1,
-                self.cfg.esperas_reintento.len()
+                "Quedan {} sin descargar; esperando {}s antes de reintentarlas...",
+                pendientes.len(),
+                espera.as_secs()
             ));
-            tokio::time::sleep(*espera).await;
-            let recuperadas = self.intentar_lote(downloader, tareas, fallidas).await;
+            tokio::time::sleep(espera).await;
+            let recuperadas = self.intentar_lote(downloader, tareas, &pendientes).await;
             let logradas = recuperadas.iter().filter(|(_, r)| r.is_ok()).count();
             if logradas > 0 {
-                avisar(&format!("Recuperadas en el reintento {}: {logradas}", pasada + 1));
+                avisar(&format!("Recuperadas en el reintento: {logradas}"));
             }
-            // El resultado nuevo pisa al anterior para esos índices.
             for (i, resultado) in recuperadas {
-                if let Some(hueco) = indexados.iter_mut().find(|(j, _)| *j == i) {
-                    hueco.1 = resultado;
-                }
+                estado[i] = Some(resultado);
             }
         }
 
@@ -446,10 +469,11 @@ impl ImageEmbedder {
         // decidir qué hacer es el reparto de causas, no el detalle de cada
         // fila.
         let mut motivos: HashMap<String, usize> = HashMap::new();
-        for (i, resultado) in indexados {
+        for (i, resultado) in estado.into_iter().enumerate() {
             match resultado {
-                Ok(imagen) => resultados[i] = Some(imagen),
-                Err(fallo) => *motivos.entry(fallo.motivo).or_insert(0) += 1,
+                Some(Ok(imagen)) => resultados[i] = Some(imagen),
+                Some(Err(fallo)) => *motivos.entry(fallo.motivo).or_insert(0) += 1,
+                None => {}
             }
         }
         if !motivos.is_empty() {

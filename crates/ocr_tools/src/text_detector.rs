@@ -116,7 +116,18 @@ impl Default for TextDetectorConfig {
             .map(str::to_string)
             .collect(),
             watermark_sat_max: 25,
-            ocr_max_dim: 900,
+            // 720 y no 900: medido sobre 58 imágenes reales de eBay, baja el
+            // costo de 10,4 a 6,5 s por imagen (1,6x) con los 58 veredictos
+            // IDÉNTICOS. El detector CRAFT escala con el cuadrado de los
+            // píxeles, así que recortar el lado mayor es la palanca más
+            // barata que tiene este pipeline.
+            //
+            // No bajar más sin medir: a 640 cambian 3 veredictos de 58, y a
+            // 512 el tiempo SUBE a 19,9 s por imagen. La relación no es
+            // monótona porque a menor resolución el detector encuentra más
+            // cajas de texto y el reconocedor —la segunda red— recibe más
+            // trabajo del que el detector ahorró.
+            ocr_max_dim: 720,
         }
     }
 }
@@ -232,11 +243,17 @@ impl TextDetector {
 
             let text_lower = text.to_lowercase();
             let words: HashSet<&str> = text_lower.split_whitespace().collect();
-            let hits: Vec<&str> = words
+            let mut hits: Vec<&str> = words
                 .iter()
                 .filter(|w| self.commercial_single.contains(**w))
                 .copied()
                 .collect();
+            // El `HashSet` deduplica, pero su orden de iteración no es
+            // estable: sin ordenar, la MISMA imagen genera el motivo
+            // "free, shipping" en una corrida y "shipping, free" en la
+            // siguiente. Eso rompe la comparación entre corridas y hace
+            // ruido en cualquier diff de resultados.
+            hits.sort_unstable();
 
             if !hits.is_empty() {
                 reasons.push(format!(

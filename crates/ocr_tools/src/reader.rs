@@ -221,3 +221,14 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod tests_hilos {
+    /// Paralelizar el OCR exige mover un `Reader` por hilo. Si `ort` deja de
+    /// ser `Send` en una versión futura, que falle acá y no en el rediseño.
+    #[test]
+    fn el_reader_se_puede_mover_entre_hilos() {
+        fn exige_send<T: Send>() {}
+        exige_send::<super::Reader>();
+    }
+}

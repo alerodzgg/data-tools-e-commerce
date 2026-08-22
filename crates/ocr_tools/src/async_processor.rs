@@ -61,7 +61,11 @@ pub struct Bloque<'a> {
 /// para que esa correlación quede a la vista en un solo lugar.
 pub struct Motor<'a> {
     pub pipeline: Arc<ImagePipeline>,
-    pub reader: Option<&'a mut Reader>,
+    /// Motores OCR disponibles. Uno por hilo: la inferencia ONNX es
+    /// CPU-bound y `run_slow` toma `&mut Reader`, así que con un solo motor
+    /// el OCR queda serializado por más núcleos que tenga la máquina — y es
+    /// la etapa más lenta de todo el pipeline.
+    pub readers: Option<&'a mut [Reader]>,
 }
 
 /// Qué se sabe ya de corridas anteriores y dónde se persiste lo nuevo.
@@ -247,8 +251,8 @@ impl AsyncBatchProcessor {
         progreso: &mut dyn FnMut(u64),
         avisar: &mut dyn FnMut(&str),
     ) {
-        let Motor { pipeline, reader } = motor;
-        if pipeline.has_slow_stage() && reader.is_none() {
+        let Motor { pipeline, readers } = motor;
+        if pipeline.has_slow_stage() && readers.as_deref().map_or(true, <[Reader]>::is_empty) {
             // Invariante violada: si el pipeline tiene etapa OCR configurada,
             // `reader` debe venir `Some` (lo garantiza hoy el único llamador
             // real, `bin/ocr_tools.rs`). Sin este guard, el `match` de más
@@ -389,8 +393,8 @@ impl AsyncBatchProcessor {
             }
         };
 
-        match (batcher.as_ref(), reader) {
-            (Some(batcher), Some(reader)) => {
+        match (batcher.as_ref(), readers) {
+            (Some(batcher), Some(readers)) if !readers.is_empty() => {
                 let pipeline_ref = &*pipeline;
                 let despacho = batcher.run(|ctxs| {
                     // `run_slow` es CPU-bound (inferencia ONNX real) y puede
@@ -404,14 +408,37 @@ impl AsyncBatchProcessor {
                     // `bin/ocr_tools.rs`); `catch_unwind` limita el daño de un
                     // panic a la imagen que lo causó — el resto del lote y el
                     // checkpoint siguen su curso normal.
+                    //
+                    // El lote se REPARTE entre los motores del pool, un hilo
+                    // por motor: `run_slow` toma `&mut Reader`, así que el
+                    // paralelismo real lo da tener varios motores, no varios
+                    // hilos sobre uno.
                     tokio::task::block_in_place(|| {
-                        ctxs.iter()
-                            .map(|ctx| {
-                                veredicto_aislando_panic(std::panic::AssertUnwindSafe(|| {
-                                    pipeline_ref.run_slow(ctx, reader)
-                                }))
-                            })
-                            .collect()
+                        let n = readers.len().min(ctxs.len()).max(1);
+                        let por_hilo = ctxs.len().div_ceil(n);
+                        let mut salida: Vec<_> = std::thread::scope(|ambito| {
+                            let mut handles = Vec::new();
+                            for (h, (trozo, motor)) in
+                                ctxs.chunks(por_hilo.max(1)).zip(readers.iter_mut()).enumerate()
+                            {
+                                handles.push(ambito.spawn(move || {
+                                    let v: Vec<_> = trozo
+                                        .iter()
+                                        .map(|ctx| {
+                                            veredicto_aislando_panic(std::panic::AssertUnwindSafe(|| {
+                                                pipeline_ref.run_slow(ctx, motor)
+                                            }))
+                                        })
+                                        .collect();
+                                    (h, v)
+                                }));
+                            }
+                            handles.into_iter().filter_map(|h| h.join().ok()).collect()
+                        });
+                        // El orden de salida DEBE seguir al de entrada: el
+                        // llamador aparea veredictos con filas por posición.
+                        salida.sort_by_key(|(h, _)| *h);
+                        salida.into_iter().flat_map(|(_, v)| v).collect()
                     })
                 });
                 tokio::join!(consumo, despacho);
@@ -488,7 +515,7 @@ mod tests {
                 },
                 Motor {
                     pipeline,
-                    reader: None,
+                    readers: None,
                 },
                 Persistencia {
                     checkpoint,
@@ -548,7 +575,7 @@ mod tests {
                 },
                 Motor {
                     pipeline,
-                    reader: None,
+                    readers: None,
                 },
                 Persistencia {
                     checkpoint,
@@ -619,7 +646,7 @@ mod tests {
                 },
                 Motor {
                     pipeline,
-                    reader: None,
+                    readers: None,
                 },
                 Persistencia {
                     checkpoint,
@@ -685,7 +712,7 @@ mod tests {
                 },
                 Motor {
                     pipeline,
-                    reader: None,
+                    readers: None,
                 },
                 Persistencia {
                     checkpoint,

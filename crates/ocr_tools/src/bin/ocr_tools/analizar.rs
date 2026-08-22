@@ -30,10 +30,26 @@ use app_shell::FlujoError;
 /// descartada y el valor volvió al original.
 const DESCARGAS_SIMULTANEAS: usize = 32;
 
+/// Cuántos motores OCR levantar en paralelo.
+///
+/// Cada motor carga su propia copia de los modelos ONNX (~94 MB), así que
+/// más motores compran velocidad con memoria. El tope de 8 evita que una
+/// máquina de muchos núcleos se quede sin RAM antes de empezar; una corrida
+/// grande en un servidor puede subirlo con `OCR_TOOLS_MOTORES`.
+fn motores_ocr() -> usize {
+    if let Some(n) = std::env::var("OCR_TOOLS_MOTORES")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+    {
+        return n.max(1);
+    }
+    std::thread::available_parallelism().map_or(1, |n| n.get().min(8))
+}
+
 async fn ejecutar_archivo(
     xlsx_path: &Path,
     pipeline: Arc<ImagePipeline>,
-    mut reader: Option<&mut Reader>,
+    mut readers: Option<&mut [Reader]>,
     rechazadas_solo: bool,
 ) -> AppResult<()> {
     app_shell::info(&format!(
@@ -108,7 +124,7 @@ async fn ejecutar_archivo(
                     },
                     Motor {
                         pipeline: pipeline.clone(),
-                        reader: reader.as_deref_mut(),
+                        readers: readers.as_deref_mut(),
                     },
                     Persistencia {
                         checkpoint: checkpoint.clone(),
@@ -189,20 +205,46 @@ pub(crate) async fn analizar_archivos(
     rechazadas_solo: bool,
 ) -> AppResult<()> {
     let pipeline = Arc::new(ImagePipeline::from_config(PipelineConfig::default(), toggles));
-    let mut reader = if pipeline.has_slow_stage() {
-        match Reader::new(modelo("craft_detector.onnx"), modelo("recognizer_latin_g2.onnx")) {
-            Ok(r) => Some(r),
-            Err(e) => {
-                app_shell::error(&format!("No se pudo cargar el motor OCR: {e}"));
-                return Ok(());
+    let mut readers = if pipeline.has_slow_stage() {
+        let n = motores_ocr();
+        let gpu = ocr_tools::session::hay_aceleracion_gpu();
+        app_shell::info(&format!(
+            "Motor OCR: {} ({n} en paralelo). Ajustable con OCR_TOOLS_MOTORES.",
+            if gpu { "GPU (CUDA)" } else { "CPU" }
+        ));
+        let mut pool = Vec::with_capacity(n);
+        for _ in 0..n {
+            match Reader::new(modelo("craft_detector.onnx"), modelo("recognizer_latin_g2.onnx")) {
+                Ok(r) => pool.push(r),
+                Err(e) => {
+                    // Con al menos uno se puede seguir, más lento: abortar
+                    // una corrida de horas por no poder abrir el motor Nº 6
+                    // sería peor que correr con 5.
+                    if pool.is_empty() {
+                        app_shell::error(&format!("No se pudo cargar el motor OCR: {e}"));
+                        return Ok(());
+                    }
+                    app_shell::warn(&format!(
+                        "Solo se pudieron cargar {} motores OCR de {n}: {e}",
+                        pool.len()
+                    ));
+                    break;
+                }
             }
         }
+        Some(pool)
     } else {
         None
     };
 
     for xlsx_path in archivos {
-        let resultado = ejecutar_archivo(xlsx_path, pipeline.clone(), reader.as_mut(), rechazadas_solo).await;
+        let resultado = ejecutar_archivo(
+            xlsx_path,
+            pipeline.clone(),
+            readers.as_deref_mut(),
+            rechazadas_solo,
+        )
+        .await;
         if let Err(e) = resultado {
             match e {
                 // Cancelar con ESC aborta el LOTE, no solo el archivo en curso.

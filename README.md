@@ -93,6 +93,102 @@ Installs the six binaries into `/usr/lib/data-tools-e-commerce/` (along with
 command on the PATH (a symlink to `hub`, created by the package's `postinst`).
 To uninstall: `sudo dpkg -r data-tools-e-commerce`.
 
+### Massive-scale image analysis on AWS (millions of images)
+
+The OCR analysis mode is bound by ONNX inference. On a 12-core laptop it
+measures **3.59 s per image** (720 px, 8 engines). At that rate 8 million
+images would take over a year, so a large batch needs GPU instances.
+
+#### Measured baseline
+
+Every figure below comes from 58 real eBay images on a 12-core laptop:
+
+| Change | Gain | Notes |
+|---|---|---|
+| `ocr_max_dim` 900 -> 720 | 1.60x | 58/58 verdicts unchanged |
+| OCR engine pool (1 -> 8) | 1.82x | saturates: ONNX already uses every core |
+
+Do **not** lower `ocr_max_dim` further without measuring. At 640 three of 58
+verdicts change, and at 512 the run gets *slower* (19.9 s/image): the detector
+finds more text boxes and the recogniser -- the second network -- ends up
+doing more work than the detector saved.
+
+#### Instance choice
+
+| Instances | Type | Purchase | Days for 8M | Cost |
+|---|---|---|---|---|
+| 4 | `g4dn.2xlarge` (T4, 8 vCPU) | **spot** | ~8.3 | ~$210 |
+
+Use **spot instances**. They cost roughly 65% less, and an interruption is
+recoverable: the run resumes from its checkpoint (see below). Without that
+checkpoint, spot would be a bad trade for a multi-day job.
+
+Four medium instances beat one large one for two reasons: throughput scales
+linearly instead of hitting the saturation curve above, and each instance
+downloads from its own IP -- which matters, because image CDNs throttle
+sustained bursts from a single address.
+
+The GPU is not optional. Without it the same work takes about 42 days.
+
+#### Preparing an instance
+
+1. Launch `g4dn.2xlarge` as **spot**, with a **Deep Learning Base AMI** (it
+   ships the NVIDIA drivers). A plain Linux server, **no desktop**: these
+   tools are terminal-only and a GUI just wastes RAM.
+
+2. Replace `runtime/` with the **GPU build** of ONNX Runtime. The bundled
+   library is the CPU build; without `libonnxruntime_providers_cuda.so` the
+   CUDA provider never registers and the run silently falls back to CPU.
+
+   `ort 2.0.0-rc.10` requires ONNX Runtime **1.22.x** -- no other version
+   loads.
+
+   ```bash
+   wget https://github.com/microsoft/onnxruntime/releases/download/v1.22.0/onnxruntime-linux-x64-gpu-1.22.0.tgz
+   tar xzf onnxruntime-linux-x64-gpu-1.22.0.tgz
+   cp onnxruntime-linux-x64-gpu-1.22.0/lib/*.so* target/release/runtime/
+   ```
+
+3. Build with `cargo build --release --workspace`.
+
+4. Split the input across instances -- one shard of about 2M rows each.
+
+#### Running over SSH
+
+These are terminal programs; no display server is involved.
+
+```bash
+ssh -i key.pem ubuntu@<instance-ip>
+tmux new -s ocr                    # survives a dropped connection
+cd ~/data-tools-e-commerce/target/release
+OCR_TOOLS_MOTORES=4 ./hub
+```
+
+Pick **OCR tools -> analyse**, choose the shard, then detach with `Ctrl+B`
+followed by `D`. Reattach any time with `tmux attach -t ocr`.
+
+Windows needs no extra software: PowerShell ships with `ssh`. If it rejects
+the key as too permissive, run
+`icacls .\key.pem /inheritance:r /grant:r "$($env:USERNAME):(R)"`.
+
+#### Verify the GPU is actually being used
+
+On startup the analysis prints one line:
+
+```
+OCR engine: GPU (CUDA) (4 in parallel). Set OCR_TOOLS_MOTORES to change.
+```
+
+**If it says `CPU`, stop the run.** The CUDA provider is missing, and the job
+would take about five times longer on hardware billed for its GPU.
+
+#### Resuming after a spot interruption
+
+Progress is appended per batch to `_checkpoint_<file>.jsonl` in the output
+directory. Re-running the same file against the same output directory skips
+everything already recorded, so a reclaimed instance costs only the work in
+flight -- not the run.
+
 ### Architecture
 
 Workspace of 8 crates under `crates/`:
@@ -342,6 +438,107 @@ Instala los 6 binarios en `/usr/lib/data-tools-e-commerce/` (junto con
 `models/`/`runtime/` de `ocr_tools`) y deja un comando `data-tools-e-commerce`
 en el PATH (símlink a `hub`, creado por el `postinst` del paquete). Para
 desinstalar: `sudo dpkg -r data-tools-e-commerce`.
+
+### Análisis de imágenes a escala masiva en AWS (millones de imágenes)
+
+El modo de análisis está limitado por la inferencia ONNX. En una portátil de
+12 núcleos mide **3,59 s por imagen** (720 px, 8 motores). A ese ritmo 8
+millones de imágenes llevarían más de un año, así que una tanda grande
+necesita instancias con GPU.
+
+#### Punto de partida medido
+
+Todas las cifras salen de 58 imágenes reales de eBay en una portátil de 12
+núcleos:
+
+| Cambio | Ganancia | Notas |
+|---|---|---|
+| `ocr_max_dim` 900 -> 720 | 1,60x | los 58 veredictos quedan idénticos |
+| Pool de motores OCR (1 -> 8) | 1,82x | satura: ONNX ya usa todos los núcleos |
+
+**No bajar más `ocr_max_dim` sin medir.** A 640 cambian 3 veredictos de 58, y
+a 512 la corrida se vuelve *más lenta* (19,9 s por imagen): el detector
+encuentra más cajas de texto y el reconocedor -- la segunda red -- termina con
+más trabajo del que el detector ahorró.
+
+#### Elección de instancia
+
+| Instancias | Tipo | Compra | Días para 8M | Costo |
+|---|---|---|---|---|
+| 4 | `g4dn.2xlarge` (T4, 8 vCPU) | **spot** | ~8,3 | ~$210 |
+
+Usar **instancias spot**. Cuestan alrededor de un 65% menos, y que AWS te
+quite una no es un problema: la corrida se reanuda desde su checkpoint (ver
+abajo). Sin ese checkpoint, spot sería un mal negocio para un trabajo de
+varios días.
+
+Cuatro instancias medianas le ganan a una grande por dos motivos: el
+rendimiento escala de forma líneal en vez de chocar con la curva de saturación
+de arriba, y cada instancia descarga desde su propia IP -- lo que importa,
+porque los CDN de imágenes limitan las ráfagas sostenidas desde una sola
+dirección.
+
+La GPU no es opcional: sin ella el mismo trabajo tarda unos 42 días.
+
+#### Preparar una instancia
+
+1. Lanzar `g4dn.2xlarge` como **spot**, con una **Deep Learning Base AMI**
+   (trae los drivers de NVIDIA). Linux de servidor pelado, **sin escritorio**:
+   estas herramientas son de terminal y una GUI solo gasta RAM.
+
+2. Reemplazar `runtime/` por la build **GPU** de ONNX Runtime. La biblioteca
+   incluida es la de CPU; sin `libonnxruntime_providers_cuda.so` el proveedor
+   CUDA no se registra y la corrida cae a CPU en silencio.
+
+   `ort 2.0.0-rc.10` exige ONNX Runtime **1.22.x** -- ningúna otra versión
+   carga.
+
+   ```bash
+   wget https://github.com/microsoft/onnxruntime/releases/download/v1.22.0/onnxruntime-linux-x64-gpu-1.22.0.tgz
+   tar xzf onnxruntime-linux-x64-gpu-1.22.0.tgz
+   cp onnxruntime-linux-x64-gpu-1.22.0/lib/*.so* target/release/runtime/
+   ```
+
+3. Compilar con `cargo build --release --workspace`.
+
+4. Repartir la entrada entre las instancias -- un bloque de unas 2M filas cada
+   una.
+
+#### Ejecutar por SSH
+
+Son programás de terminal; no interviene ningún servidor gráfico.
+
+```bash
+ssh -i clave.pem ubuntu@<ip-de-la-instancia>
+tmux new -s ocr                    # sobrevive a que se corte la conexión
+cd ~/data-tools-e-commerce/target/release
+OCR_TOOLS_MOTORES=4 ./hub
+```
+
+Elegir **OCR tools -> analizar**, indicar el bloque, y desconectarse con
+`Ctrl+B` y después `D`. Para volver a ver el progreso, `tmux attach -t ocr`.
+
+En Windows no hace falta instalar nada: PowerShell ya trae `ssh`. Si rechaza
+la clave por permisos demasiado abiertos, correr
+`icacls .\clave.pem /inheritance:r /grant:r "$($env:USERNAME):(R)"`.
+
+#### Verificar que la GPU se está usando de verdad
+
+Al arrancar, el análisis imprime una línea:
+
+```
+Motor OCR: GPU (CUDA) (4 en paralelo). Ajustable con OCR_TOOLS_MOTORES.
+```
+
+**Si dice `CPU`, cortar la corrida.** Falta el proveedor CUDA, y el trabajo
+tardaría unas cinco veces más en un hardware que se paga por su GPU.
+
+#### Reanudar tras una interrupción de spot
+
+El progreso se agrega por lote a `_checkpoint_<archivo>.jsonl` en la carpeta
+de salida. Volver a correr el mismo archivo contra la misma carpeta saltea
+todo lo ya registrado, así que una instancia recuperada por AWS cuesta solo el
+trabajo en vuelo, no la corrida.
 
 ### Arquitectura
 
