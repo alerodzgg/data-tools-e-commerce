@@ -171,6 +171,40 @@ Windows needs no extra software: PowerShell ships with `ssh`. If it rejects
 the key as too permissive, run
 `icacls .\key.pem /inheritance:r /grant:r "$($env:USERNAME):(R)"`.
 
+#### Unattended mode (no prompts)
+
+With any argument, `ocr_tools` skips the menu and asks nothing — required on a
+server, where the interactive prompts would block forever.
+
+```
+ocr_tools --archivo <path>      file to analyse (repeatable)
+          --columnas <a,b>      URL columns; omit to auto-detect
+          --salida <dir>        output and checkpoint directory
+          --rechazadas-solo     write only the rejected file
+          --ayuda               help
+```
+
+Exit codes: `0` success, `1` run failed, `2` bad arguments or missing file.
+
+#### Auto-restart after a spot interruption
+
+```ini
+[Service]
+ExecStart=/home/ubuntu/ocr_tools --archivo /datos/bloque1.xlsx --salida /datos/salida
+Restart=always
+RestartSec=60
+```
+
+`systemd` relaunches on any non-zero exit. Progress is appended per batch to
+`_checkpoint_<file>.jsonl` in the output directory, and re-running the same
+file against the same directory skips what is already recorded — so an
+interruption costs only the batch in flight, not the run.
+
+Transient download failures are retried on a schedule (60 s, 5 min, 15 min,
+30 min) before being recorded as rejected — a throttling window would otherwise
+mark thousands of images as rejected without ever analysing them. Permanent
+failures (404, bad URL) are not retried.
+
 #### Verify the GPU is actually being used
 
 On startup the analysis prints one line:
@@ -181,13 +215,6 @@ OCR engine: GPU (CUDA) (4 in parallel). Set OCR_TOOLS_MOTORES to change.
 
 **If it says `CPU`, stop the run.** The CUDA provider is missing, and the job
 would take about five times longer on hardware billed for its GPU.
-
-#### Resuming after a spot interruption
-
-Progress is appended per batch to `_checkpoint_<file>.jsonl` in the output
-directory. Re-running the same file against the same output directory skips
-everything already recorded, so a reclaimed instance costs only the work in
-flight -- not the run.
 
 ### Architecture
 
@@ -522,6 +549,43 @@ En Windows no hace falta instalar nada: PowerShell ya trae `ssh`. Si rechaza
 la clave por permisos demasiado abiertos, correr
 `icacls .\clave.pem /inheritance:r /grant:r "$($env:USERNAME):(R)"`.
 
+#### Modo desatendido (sin preguntas)
+
+Con cualquier argumento, `ocr_tools` saltea el menú y no pregunta nada —
+necesario en un servidor, donde los diálogos interactivos bloquearían para
+siempre.
+
+```
+ocr_tools --archivo <ruta>      archivo a analizar (repetible)
+          --columnas <a,b>      columnas de URL; sin esto se detectan solas
+          --salida <carpeta>    carpeta de salida y checkpoint
+          --rechazadas-solo     escribir solo el archivo de rechazadas
+          --ayuda               ayuda
+```
+
+Códigos de salida: `0` éxito, `1` la corrida falló, `2` argumentos inválidos o
+archivo inexistente.
+
+#### Reinicio automático tras una interrupción de spot
+
+```ini
+[Service]
+ExecStart=/home/ubuntu/ocr_tools --archivo /datos/bloque1.xlsx --salida /datos/salida
+Restart=always
+RestartSec=60
+```
+
+`systemd` relanza ante cualquier salida distinta de cero. El progreso se
+agrega por lote a `_checkpoint_<archivo>.jsonl` en la carpeta de salida, y
+volver a correr el mismo archivo contra la misma carpeta saltea lo ya
+registrado — así que una interrupción cuesta solo el lote en vuelo, no la
+corrida.
+
+Los fallos transitorios de descarga se reintentan con un calendario (60 s,
+5 min, 15 min, 30 min) antes de darse por rechazados — sin eso, una ventana de
+throttling marcaría miles de imágenes como rechazadas sin haberlas analizado.
+Los fallos permanentes (404, URL inválida) no se reintentan.
+
 #### Verificar que la GPU se está usando de verdad
 
 Al arrancar, el análisis imprime una línea:
@@ -532,13 +596,6 @@ Motor OCR: GPU (CUDA) (4 en paralelo). Ajustable con OCR_TOOLS_MOTORES.
 
 **Si dice `CPU`, cortar la corrida.** Falta el proveedor CUDA, y el trabajo
 tardaría unas cinco veces más en un hardware que se paga por su GPU.
-
-#### Reanudar tras una interrupción de spot
-
-El progreso se agrega por lote a `_checkpoint_<archivo>.jsonl` en la carpeta
-de salida. Volver a correr el mismo archivo contra la misma carpeta saltea
-todo lo ya registrado, así que una instancia recuperada por AWS cuesta solo el
-trabajo en vuelo, no la corrida.
 
 ### Arquitectura
 

@@ -242,9 +242,25 @@ fn toda_referencia_apunta_a_algo_que_existe() {
         .and_then(|r| r.split('"').next())
         .and_then(|n| n.parse().ok())
         .expect("styles.xml declara cuántas fuentes tiene");
-    for (nombre, xml) in libro.hojas() {
+    //
+    //    Se revisan las hojas Y `styles.xml`. Nuestro escritor no emite
+    //    `fontId` en las hojas —solo lo hace `umya` al reescribirlas— pero sí
+    //    en `cellXfs`/`cellStyleXfs`. Mirando solo las hojas, esta regla no
+    //    cubría ni una línea de lo que producimos.
+    let mut a_revisar: Vec<(&str, &str)> = libro
+        .hojas()
+        .into_iter()
+        .map(|(n, x)| (n.as_str(), x.as_str()))
+        .collect();
+    a_revisar.push(("xl/styles.xml", estilos));
+    for (nombre, xml) in a_revisar {
         for trozo in xml.split("fontId=\"").skip(1) {
-            let indice: usize = trozo.split('"').next().unwrap().parse().expect("fontId numérico");
+            let indice: usize = trozo
+                .split('"')
+                .next()
+                .unwrap_or_default()
+                .parse()
+                .expect("fontId numérico");
             assert!(
                 indice < declaradas,
                 "{nombre}: cita fontId={indice} pero styles.xml declara {declaradas}"

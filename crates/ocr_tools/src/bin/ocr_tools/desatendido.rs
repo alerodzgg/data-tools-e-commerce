@@ -9,7 +9,7 @@
 //! Con este modo, un `systemd` con `Restart=always` reanuda solo: el
 //! checkpoint saltea lo ya procesado y solo se repite el lote en vuelo.
 //!
-//! El parseo es a mano y no con `clap` a propósito: son seis banderas, y una
+//! El parseo es a mano y no con `clap` a propósito: son cinco banderas, y una
 //! dependencia nueva en el árbol se paga en cada compilación de cada crate.
 
 use std::path::PathBuf;
