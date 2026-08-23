@@ -89,9 +89,30 @@ pub struct AsyncBatchProcessor {
     /// reconstruir el cliente en cada llamada perdería el reuso de conexiones
     /// entre hojas del mismo libro.
     downloader_cache: tokio::sync::OnceCell<AsyncImageDownloader>,
+    /// Esperas antes de cada reintento DIFERIDO de una descarga que falló
+    /// por una causa transitoria. Vacío = sin reintentos diferidos.
+    ///
+    /// Los 3 intentos inmediatos del `downloader` tienen backoff de segundos:
+    /// alcanzan para un 503 pasajero, no para un CDN que nos está haciendo
+    /// *tarpit*, cuya ventana de castigo dura minutos. Sin esto, una ventana
+    /// de throttling marca miles de imágenes como "No se pudo descargar" —
+    /// que el análisis reporta como RECHAZADAS sin haberlas mirado.
+    ///
+    /// Las esperas crecen porque no se sabe cuánto dura el castigo. Y solo
+    /// aplican a fallos transitorios: un 404 no mejora esperando.
+    esperas_reintento: Vec<Duration>,
 }
 
 impl AsyncBatchProcessor {
+    /// Fija el calendario de reintentos diferidos. Solo para tests: en
+    /// producción vale el de `new()`, y una espera de milisegundos no
+    /// serviría contra una ventana de throttling de minutos.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn con_esperas_de_reintento(mut self, esperas: Vec<Duration>) -> Self {
+        self.esperas_reintento = esperas;
+        self
+    }
+
     pub fn new(
         download_cfg: DownloadConfig,
         ocr_batch_size: usize,
@@ -106,6 +127,17 @@ impl AsyncBatchProcessor {
             max_concurrency,
             checkpoint_every,
             downloader_cache: tokio::sync::OnceCell::new(),
+            // Vacío bajo test: varios tests fallan descargas a propósito
+            // (puertos sin listener) y las pausas reales convertirían la
+            // suite en una hora de sleep.
+            esperas_reintento: if cfg!(any(test, feature = "test-support")) {
+                Vec::new()
+            } else {
+                [60, 300, 900, 1800]
+                    .into_iter()
+                    .map(Duration::from_secs)
+                    .collect()
+            },
         }
     }
 }
@@ -316,11 +348,29 @@ impl AsyncBatchProcessor {
             .has_slow_stage()
             .then(|| OcrBatcher::new(self.ocr_batch_size, self.ocr_batch_timeout));
 
+        let esperas: &[Duration] = &self.esperas_reintento;
         let procesar_una = |task: CellTask| {
             let pipeline = pipeline.clone();
             let batcher = batcher.clone();
             async move {
-                let content = downloader.fetch(&task.url).await;
+                let mut content = downloader.fetch(&task.url).await;
+                // Reintentos DIFERIDOS, solo para causas transitorias.
+                //
+                // Esperar acá ocupa un lugar de la concurrencia, y es a
+                // propósito: cuando el CDN nos está limitando fallan TODAS a
+                // la vez, así que todas duermen en paralelo y el costo en
+                // reloj es una espera, no una por imagen. Frenar el pipeline
+                // entero es justamente lo que hace falta mientras la ventana
+                // de castigo está abierta.
+                for espera in esperas {
+                    match &content {
+                        Err(fallo) if fallo.vale_reintentar_mas_tarde() => {
+                            tokio::time::sleep(*espera).await;
+                            content = downloader.fetch(&task.url).await;
+                        }
+                        _ => break,
+                    }
+                }
                 let (verdict, ctx) = decode_and_run_fast(pipeline, resize_max_dim, content).await;
                 let veredicto = match (verdict, ctx, &batcher) {
                     (Some(v), _, _) => v,
@@ -454,7 +504,8 @@ impl AsyncBatchProcessor {
 mod tests {
     use super::*;
     use crate::downloader::FalloDescarga;
-    use std::sync::atomic::Ordering;
+    use crate::pipeline::{DetectorToggles, PipelineConfig};
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[tokio::test]
     async fn pending_tasks_ignora_celdas_cacheadas_y_no_urls() {
@@ -745,6 +796,117 @@ mod tests {
         assert!(
             !motivo.contains("URL inválida") && !motivo.contains("URL mal formada"),
             "la URL es válida: el motivo no debe acusarla: {motivo:?}"
+        );
+    }
+    /// Servidor que responde SIEMPRE con el status dado y cuenta los pedidos.
+    fn servidor_que_siempre_responde(status: &'static str) -> (String, Arc<AtomicUsize>) {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let puerto = listener.local_addr().unwrap().port();
+        let vistos = Arc::new(AtomicUsize::new(0));
+        let contador = Arc::clone(&vistos);
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let mut buf = [0u8; 1024];
+                let _ = stream.read(&mut buf);
+                contador.fetch_add(1, Ordering::SeqCst);
+                let _ = stream.write_all(
+                    format!(
+                        "HTTP/1.1 {status}
+Content-Length: 0
+Connection: close
+
+"
+                    )
+                    .as_bytes(),
+                );
+            }
+        });
+        (format!("http://127.0.0.1:{puerto}/x.jpg"), vistos)
+    }
+
+    async fn pedidos_recibidos(status: &'static str, esperas: Vec<Duration>) -> usize {
+        let (url, vistos) = servidor_que_siempre_responde(status);
+        let df = df! { "Imagen 1" => [url.as_str()] }.unwrap();
+        let procesador = AsyncBatchProcessor::new(
+            DownloadConfig {
+                timeout: Duration::from_secs(2),
+                backoff: Duration::from_millis(1),
+                backoff_timeout: Duration::from_millis(1),
+                ..DownloadConfig::default()
+            },
+            1,
+            Duration::from_millis(10),
+            2,
+            10,
+        )
+        .con_esperas_de_reintento(esperas);
+        let tmp = tempfile::tempdir().unwrap();
+        let pipeline = Arc::new(ImagePipeline::from_config(
+            PipelineConfig::default(),
+            DetectorToggles {
+                d1: true,
+                d2: false,
+                d3: false,
+                d4_d5_d6: false,
+            },
+        ));
+        let checkpoint = Arc::new(CheckpointStore::new(tmp.path().join("ck.jsonl")));
+        let url_columns = vec!["Imagen 1".to_string()];
+        let _ = procesador
+            .process(
+                Bloque {
+                    df: &df,
+                    url_columns: &url_columns,
+                    idx_offset: 0,
+                },
+                Motor {
+                    pipeline,
+                    readers: None,
+                },
+                Persistencia {
+                    checkpoint,
+                    cached: &HashMap::new(),
+                },
+                |_| {},
+                |_: &str| {},
+            )
+            .await;
+        vistos.load(Ordering::SeqCst)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn un_fallo_transitorio_consume_el_calendario_de_reintentos() {
+        // 503 es transitorio: sin calendario van los 3 intentos inmediatos;
+        // con dos esperas más, tres tandas. Sin esto, una ventana de
+        // throttling marca miles de imágenes como rechazadas sin mirarlas.
+        let sin = pedidos_recibidos("503 Service Unavailable", Vec::new()).await;
+        let con = pedidos_recibidos(
+            "503 Service Unavailable",
+            vec![Duration::from_millis(10), Duration::from_millis(10)],
+        )
+        .await;
+        assert!(
+            con > sin,
+            "el calendario no reintentó: {sin} pedidos sin él, {con} con él"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn un_fallo_permanente_no_consume_el_calendario() {
+        // Un 404 no mejora esperando media hora. Reintentarlo en una corrida
+        // de millones de imágenes sería tiempo tirado a escala.
+        let sin = pedidos_recibidos("404 Not Found", Vec::new()).await;
+        let con = pedidos_recibidos(
+            "404 Not Found",
+            vec![Duration::from_millis(10), Duration::from_millis(10)],
+        )
+        .await;
+        assert_eq!(
+            con, sin,
+            "un 404 se reintentó: el calendario se gasta en algo que no puede cambiar"
         );
     }
 }

@@ -15,7 +15,7 @@ use ocr_tools::reader::Reader;
 use ocr_tools::report::build_report;
 use ocr_tools::xlsx_loader;
 
-use crate::dialogos::resolver_columnas_url;
+use crate::dialogos::{resolver_columnas_url, ModoColumnas};
 use crate::{modelo, AppError, AppResult};
 use app_shell::FlujoError;
 
@@ -51,6 +51,7 @@ async fn ejecutar_archivo(
     pipeline: Arc<ImagePipeline>,
     mut readers: Option<&mut [Reader]>,
     rechazadas_solo: bool,
+    modo_columnas: ModoColumnas<'_>,
 ) -> AppResult<()> {
     app_shell::info(&format!(
         "\nProcesando: {}",
@@ -71,7 +72,7 @@ async fn ejecutar_archivo(
         return Ok(());
     }
 
-    let url_columns = resolver_columnas_url(xlsx_path, &columnas)?;
+    let url_columns = resolver_columnas_url(xlsx_path, &columnas, modo_columnas)?;
     if url_columns.is_empty() {
         app_shell::error("Sin columnas URL. Saltando archivo.");
         return Ok(());
@@ -203,6 +204,8 @@ pub(crate) async fn analizar_archivos(
     archivos: &[PathBuf],
     toggles: DetectorToggles,
     rechazadas_solo: bool,
+    columnas_fijas: Option<&[String]>,
+    desatendido: bool,
 ) -> AppResult<()> {
     let pipeline = Arc::new(ImagePipeline::from_config(PipelineConfig::default(), toggles));
     let mut readers = if pipeline.has_slow_stage() {
@@ -243,6 +246,12 @@ pub(crate) async fn analizar_archivos(
             pipeline.clone(),
             readers.as_deref_mut(),
             rechazadas_solo,
+            match columnas_fijas {
+                Some(c) => ModoColumnas::Fijas(c),
+                // Sin argumentos hay un humano al teclado; con ellos, no.
+                None if desatendido => ModoColumnas::DetectarSinPreguntar,
+                None => ModoColumnas::Preguntar,
+            },
         )
         .await;
         if let Err(e) = resultado {

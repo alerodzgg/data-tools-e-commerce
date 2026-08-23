@@ -80,7 +80,42 @@ pub(crate) fn elegir_modo_rechazadas() -> FlujoResult<bool> {
 
 /// Detecta columnas URL automáticamente; si hay candidatas, confirma con el
 /// usuario. Sin candidatas, o si no las quiere, deja elegir manualmente.
-pub(crate) fn resolver_columnas_url(xlsx_path: &Path, columnas: &[String]) -> AppResult<Vec<String>> {
+/// De dónde salen las columnas de URL.
+///
+/// Un enum y no un `Option<Vec<String>>` porque son TRES casos, no dos, y el
+/// tercero es el que hace falta en un servidor: detectarlas solas SIN
+/// preguntar. Con un `Option`, "detectar" y "preguntar" quedaban colapsados
+/// y el modo desatendido se trababa esperando una tecla.
+pub(crate) enum ModoColumnas<'a> {
+    /// Escritorio: detectar y pedir confirmación.
+    Preguntar,
+    /// Las dijo el usuario por línea de comandos.
+    Fijas(&'a [String]),
+    /// Desatendido: lo que detecte, sin confirmar.
+    DetectarSinPreguntar,
+}
+
+pub(crate) fn resolver_columnas_url(
+    xlsx_path: &Path,
+    columnas: &[String],
+    modo: ModoColumnas<'_>,
+) -> AppResult<Vec<String>> {
+    // Las fijas se validan contra el archivo: un nombre mal escrito en el
+    // comando tiene que fallar acá y no producir una corrida de días que no
+    // analiza nada.
+    if let ModoColumnas::Fijas(pedidas) = modo {
+        let faltan: Vec<&String> = pedidas.iter().filter(|c| !columnas.contains(c)).collect();
+        if !faltan.is_empty() {
+            app_shell::error(&format!(
+                "El archivo no tiene estas columnas: {}. Disponibles: {}",
+                faltan.iter().map(|c| c.as_str()).collect::<Vec<_>>().join(", "),
+                columnas.join(", ")
+            ));
+            return Ok(Vec::new());
+        }
+        return Ok(pedidas.to_vec());
+    }
+
     let sample = xlsx_loader::load_sample(xlsx_path, 50);
     let candidatas = match &sample {
         Some(df) => url_helper::auto_detect_columns(df, 10)?,
@@ -90,6 +125,9 @@ pub(crate) fn resolver_columnas_url(xlsx_path: &Path, columnas: &[String]) -> Ap
 
     if !candidatas.is_empty() {
         app_shell::success(&format!("Columnas URL detectadas: {}", candidatas.join(", ")));
+        if matches!(modo, ModoColumnas::DetectarSinPreguntar) {
+            return Ok(candidatas);
+        }
         let usar = app_shell::menu_confirmar(
             &format!(
                 "¿Usar las columnas detectadas automáticamente? ({})",

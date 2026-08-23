@@ -18,6 +18,7 @@ use ocr_tools::pipeline::DetectorToggles;
 use ocr_tools::xlsx_loader;
 
 mod analizar;
+mod desatendido;
 mod dialogos;
 mod insertar;
 
@@ -130,16 +131,79 @@ async fn ciclo_principal() -> AppResult<()> {
             Err(e) => return Err(e.into()),
         };
 
-        analizar_archivos(&seleccionados, toggles, rechazadas_solo).await?;
+        analizar_archivos(&seleccionados, toggles, rechazadas_solo, None, false).await?;
+    }
+}
+
+/// Analiza sin preguntar nada, para correr bajo systemd o nohup.
+///
+/// No imprime la cabecera decorativa ni el diagnóstico del sistema: en un
+/// servidor eso solo ensucia el log que alguien va a leer buscando por qué
+/// se cortó una corrida de días.
+async fn correr_desatendido(opciones: desatendido::Opciones) -> i32 {
+    if let Some(salida) = opciones.salida {
+        if let Err(e) = std::fs::create_dir_all(&salida) {
+            app_shell::error(&format!("No se pudo crear '{}': {e}", salida.display()));
+            return 1;
+        }
+        app_shell::fijar_rutas(None, Some(salida));
+    }
+    // Validar ANTES de arrancar: una ruta mal escrita salía con código 0, y
+    // para systemd eso es "terminó bien". La corrida no procesaba nada, no
+    // se reintentaba, y el silencio duraba hasta que alguien mirara la
+    // carpeta de salida vacía.
+    let faltantes: Vec<&std::path::PathBuf> = opciones.archivos.iter().filter(|r| !r.is_file()).collect();
+    if !faltantes.is_empty() {
+        for ruta in faltantes {
+            app_shell::error(&format!("No existe el archivo: {}", ruta.display()));
+        }
+        return 2;
+    }
+
+    let resultado = analizar_archivos(
+        &opciones.archivos,
+        DetectorToggles::default(),
+        opciones.rechazadas_solo,
+        opciones.columnas.as_deref(),
+        true,
+    )
+    .await;
+    match resultado {
+        Ok(()) => 0,
+        Err(e) => {
+            // Código distinto de cero para que systemd sepa que hay que
+            // reintentar: con `Restart=always` esto es lo que reanuda la
+            // corrida tras una interrupción de spot.
+            app_shell::error(&format!("Error fatal: {e}"));
+            1
+        }
     }
 }
 
 #[tokio::main]
 async fn main() {
-    app_shell::mostrar_cabecera("OCR TOOLS — filtrar imágenes por su contenido");
-    app_shell::mostrar_diagnostico_sistema();
-
-    if let Err(e) = ciclo_principal().await {
-        app_shell::error(&format!("Error fatal: {e}"));
-    }
+    let codigo = match desatendido::parsear(std::env::args().skip(1)) {
+        Ok(Some(opciones)) => correr_desatendido(opciones).await,
+        Ok(None) => {
+            app_shell::mostrar_cabecera("OCR TOOLS — filtrar imágenes por su contenido");
+            app_shell::mostrar_diagnostico_sistema();
+            match ciclo_principal().await {
+                Ok(()) => 0,
+                Err(e) => {
+                    app_shell::error(&format!("Error fatal: {e}"));
+                    1
+                }
+            }
+        }
+        Err(desatendido::FalloArgumentos::PidioAyuda) => {
+            println!("{}", desatendido::AYUDA);
+            0
+        }
+        Err(desatendido::FalloArgumentos::Invalido(detalle)) => {
+            app_shell::error(&detalle);
+            println!("{}", desatendido::AYUDA);
+            2
+        }
+    };
+    std::process::exit(codigo);
 }
