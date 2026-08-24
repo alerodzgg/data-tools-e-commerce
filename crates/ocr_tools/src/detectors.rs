@@ -1,25 +1,18 @@
-//! D1-D3 · Detectores CPU del pipeline de rechazo de imágenes: banner de
-//! color sólido, fondo no neutro en las esquinas, y diagrama técnico. Corren
-//! antes que el OCR (D4-D6) porque son órdenes de magnitud más baratos.
+//! D1-D2 · Detectores CPU del pipeline de rechazo de imágenes: banner de
+//! color sólido y fondo no neutro en las esquinas. Corren antes que el OCR
+//! (D4-D6) porque son órdenes de magnitud más baratos: medidos sobre 461
+//! imágenes reales dieron 0,011 s y 0,001 s por imagen, contra 4,4 s del OCR.
 //!
-//! Nota de diseño (D3): la detección de diagramas necesita contar líneas
-//! rectas, pero la variante de Hough que devuelve SEGMENTOS de recta con
-//! longitud/hueco mínimos no está disponible aquí. `imageproc` solo trae la
-//! Transformada de Hough estándar (`hough::detect_lines`), que vota líneas
-//! infinitas en el espacio (r, θ) y no tiene noción de longitud de segmento
-//! ni de huecos. Además, ese tipo de detector probabilístico de segmentos es
-//! intrínsecamente no-determinista (muestreo aleatorio de puntos de borde),
-//! así que ni siquiera sería reproducible bit a bit. Por eso esto es una
-//! aproximación deliberada: se usa un umbral de votos (`hough_vote_threshold`,
-//! 60 por defecto) sobre el acumulador estándar, y se cuenta el número de
-//! líneas tras supresión de no-máximos como proxy del número de líneas
-//! detectadas. No hay fixture externa contra la cual validar equivalencia
-//! exacta para D1-D3, así que la verificación aquí es por casos sintéticos
-//! directos, no por equivalencia cruzada.
+//! Hubo un D3 (diagrama técnico, por Transformada de Hough) que se eliminó:
+//! costaba 6,5 s por imagen —el 58% del cómputo, más que el OCR entero— y no
+//! detectaba nada. Aprobó las 461 imágenes del lote y también los diagramas
+//! de despiece que el usuario señaló a mano. Buscaba líneas RECTAS largas, y
+//! una ilustración de autopartes son contornos curvos sobre fondo blanco.
+//!
+//! No hay fixture externa contra la cual validar equivalencia exacta para
+//! D1-D2, así que la verificación aquí es por casos sintéticos directos.
 
 use image::{GrayImage, Luma, RgbImage};
-use imageproc::edges::canny;
-use imageproc::hough::{detect_lines, LineDetectionOptions};
 
 /// Saturación y valor de HSV en convención 8-bit (0-255), a partir de un
 /// pixel RGB. El matiz no se calcula: ningún detector lo usa, y da igual el
@@ -59,7 +52,7 @@ impl DetectionResult {
 }
 
 /// Cache de espacios de color derivados de una imagen RGB, compartidos entre
-/// D1-D3. `sat`/`val` son la saturación y el valor de HSV en convención
+/// D1-D2. `sat`/`val` son la saturación y el valor de HSV en convención
 /// 8-bit (0-255, no 0-1); no se calcula el matiz porque ningún detector lo
 /// necesita. `gray` usa deliberadamente los pesos ITU-R BT.601
 /// (0.299/0.587/0.114), distintos de los BT.709 que usa
@@ -227,67 +220,6 @@ impl NonNeutralBackgroundDetector {
     }
 }
 
-pub struct DiagramConfig {
-    pub canny_lo: f32,
-    pub canny_hi: f32,
-    pub edge_ratio: f32,
-    pub min_lines: u32,
-    /// Umbral de votos del acumulador de Hough (por defecto 60; ver nota de
-    /// diseño al inicio del módulo).
-    pub hough_vote_threshold: u32,
-    /// Radio de supresión de no-máximos sobre el acumulador (r, θ): agrupa
-    /// picos vecinos para no contar la misma recta física varias veces.
-    /// Ajustable si D3 resulta demasiado sensible/insensible en producción.
-    pub hough_suppression_radius: u32,
-}
-
-impl Default for DiagramConfig {
-    fn default() -> Self {
-        Self {
-            canny_lo: 50.0,
-            canny_hi: 150.0,
-            edge_ratio: 0.18,
-            min_lines: 12,
-            hough_vote_threshold: 60,
-            hough_suppression_radius: 8,
-        }
-    }
-}
-
-/// D3 — Alta densidad de bordes Canny + muchas líneas rectas (Hough).
-pub struct TechnicalDiagramDetector {
-    cfg: DiagramConfig,
-}
-
-impl TechnicalDiagramDetector {
-    pub fn new(cfg: DiagramConfig) -> Self {
-        Self { cfg }
-    }
-
-    pub fn detect(&self, ctx: &ImageContext) -> DetectionResult {
-        let c = &self.cfg;
-        let edges = canny(&ctx.gray, c.canny_lo, c.canny_hi);
-        let edge_count = edges.pixels().filter(|p| p.0[0] > 0).count() as f32;
-        let ratio = edge_count / (ctx.width * ctx.height).max(1) as f32;
-
-        let lines = detect_lines(
-            &edges,
-            LineDetectionOptions {
-                vote_threshold: c.hough_vote_threshold,
-                suppression_radius: c.hough_suppression_radius,
-            },
-        );
-        let n_lines = lines.len() as u32;
-
-        if ratio > c.edge_ratio && n_lines >= c.min_lines {
-            return DetectionResult::reject(format!(
-                "D3·Diagrama técnico: ratio_bordes={ratio:.3}, líneas_rectas={n_lines}"
-            ));
-        }
-        DetectionResult::accept()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -354,28 +286,5 @@ mod tests {
         let res = det.detect(&ctx);
         assert!(res.detected);
         assert!(res.reason.contains("D2"));
-    }
-
-    #[test]
-    fn d3_acepta_imagen_lisa_sin_bordes() {
-        let ctx = ImageContext::new(&imagen_neutra(120, 120));
-        let det = TechnicalDiagramDetector::new(DiagramConfig::default());
-        assert!(!det.detect(&ctx).detected);
-    }
-
-    #[test]
-    fn d3_rechaza_rejilla_de_lineas_rectas() {
-        let mut img = imagen_neutra(120, 120);
-        for step in (0..120).step_by(8) {
-            for i in 0..120u32 {
-                img.put_pixel(step, i, Rgb([0, 0, 0]));
-                img.put_pixel(i, step, Rgb([0, 0, 0]));
-            }
-        }
-        let ctx = ImageContext::new(&img);
-        let det = TechnicalDiagramDetector::new(DiagramConfig::default());
-        let res = det.detect(&ctx);
-        assert!(res.detected, "una rejilla densa deberia disparar D3");
-        assert!(res.reason.contains("D3"));
     }
 }

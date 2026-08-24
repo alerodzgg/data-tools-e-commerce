@@ -58,11 +58,10 @@ async fn pipeline_async_completo_rechaza_el_placeholder_via_ocr_real() {
     let url_columns = vec!["Imagen 1".to_string()];
 
     // Solo D4-D6 (OCR): el objetivo es probar el cableado async + motor OCR
-    // real, no las heurísticas de color/bordes de D1-D3.
+    // real, no las heurísticas de color/bordes de D1-D2.
     let toggles = DetectorToggles {
         d1: false,
         d2: false,
-        d3: false,
         d4_d5_d6: true,
     };
     let pipeline = Arc::new(ImagePipeline::from_config(PipelineConfig::default(), toggles));
@@ -176,7 +175,6 @@ async fn el_pool_de_motores_no_altera_el_orden_de_los_veredictos() {
     let toggles = DetectorToggles {
         d1: false,
         d2: false,
-        d3: false,
         d4_d5_d6: true,
     };
     let pipeline = Arc::new(ImagePipeline::from_config(PipelineConfig::default(), toggles));

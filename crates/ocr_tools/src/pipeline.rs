@@ -9,8 +9,7 @@
 //! ninguna vía de fallo en tiempo de ejecución.
 
 use crate::detectors::{
-    BackgroundConfig, BannerConfig, DiagramConfig, ImageContext, NonNeutralBackgroundDetector,
-    SolidBannerDetector, TechnicalDiagramDetector,
+    BackgroundConfig, BannerConfig, ImageContext, NonNeutralBackgroundDetector, SolidBannerDetector,
 };
 use crate::reader::Reader;
 use crate::text_detector::{TextDetector, TextDetectorConfig};
@@ -19,7 +18,6 @@ use crate::text_detector::{TextDetector, TextDetectorConfig};
 pub struct PipelineConfig {
     pub banner: BannerConfig,
     pub background: BackgroundConfig,
-    pub diagram: DiagramConfig,
     pub text: TextDetectorConfig,
 }
 
@@ -28,7 +26,6 @@ pub struct PipelineConfig {
 pub struct DetectorToggles {
     pub d1: bool,
     pub d2: bool,
-    pub d3: bool,
     pub d4_d5_d6: bool,
 }
 
@@ -37,7 +34,6 @@ impl Default for DetectorToggles {
         Self {
             d1: true,
             d2: true,
-            d3: true,
             d4_d5_d6: true,
         }
     }
@@ -51,7 +47,6 @@ pub struct PipelineVerdict {
 pub struct ImagePipeline {
     d1: Option<SolidBannerDetector>,
     d2: Option<NonNeutralBackgroundDetector>,
-    d3: Option<TechnicalDiagramDetector>,
     slow: Option<TextDetector>,
 }
 
@@ -60,13 +55,11 @@ impl ImagePipeline {
         let PipelineConfig {
             banner,
             background,
-            diagram,
             text,
         } = cfg;
         Self {
             d1: toggles.d1.then(|| SolidBannerDetector::new(banner)),
             d2: toggles.d2.then(|| NonNeutralBackgroundDetector::new(background)),
-            d3: toggles.d3.then(|| TechnicalDiagramDetector::new(diagram)),
             slow: toggles.d4_d5_d6.then(|| TextDetector::new(text)),
         }
     }
@@ -89,15 +82,6 @@ impl ImagePipeline {
         }
         if let Some(d2) = &self.d2 {
             let r = d2.detect(ctx);
-            if r.detected {
-                return Some(PipelineVerdict {
-                    approved: false,
-                    reasons: vec![r.reason],
-                });
-            }
-        }
-        if let Some(d3) = &self.d3 {
-            let r = d3.detect(ctx);
             if r.detected {
                 return Some(PipelineVerdict {
                     approved: false,
@@ -152,7 +136,7 @@ mod tests {
     }
 
     #[test]
-    fn run_fast_rechaza_en_d1_sin_llegar_a_d2_ni_d3() {
+    fn run_fast_rechaza_en_d1_sin_llegar_a_d2() {
         let mut img = imagen_neutra(100, 100);
         for y in 0..20 {
             for x in 0..100 {
@@ -193,7 +177,6 @@ mod tests {
         let toggles = DetectorToggles {
             d1: false,
             d2: false,
-            d3: false,
             d4_d5_d6: false,
         };
         let pipeline = ImagePipeline::from_config(PipelineConfig::default(), toggles);

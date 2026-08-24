@@ -849,7 +849,6 @@ Connection: close
             DetectorToggles {
                 d1: true,
                 d2: false,
-                d3: false,
                 d4_d5_d6: false,
             },
         ));

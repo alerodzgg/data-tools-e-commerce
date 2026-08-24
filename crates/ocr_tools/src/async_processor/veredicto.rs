@@ -28,7 +28,7 @@ fn rechazo(motivo: String) -> (Option<PipelineVerdict>, Option<ImageContext>) {
 }
 
 /// Decode + detectores CPU en un solo salto a un thread de bloqueo (igual
-/// que `_decode_and_run_fast`: decodificar y correr D1-D3 juntos evita un
+/// que `_decode_and_run_fast`: decodificar y correr D1-D2 juntos evita un
 /// segundo round-trip y deja el runtime async libre para I/O de red).
 pub(super) async fn decode_and_run_fast(
     pipeline: Arc<ImagePipeline>,
