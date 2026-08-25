@@ -741,13 +741,13 @@ mod tests {
             4,
             100,
         );
-        // Sin etapa OCR: con `d4_d5_d6` activo y `reader: None`, `run_async`
+        // Sin etapa OCR: con `d3_d4_d5` activo y `reader: None`, `run_async`
         // corta antes por su propio guard de invariante y nunca llega a
         // intentar la descarga, que es justo lo que este test mide.
         let pipeline = Arc::new(ImagePipeline::from_config(
             crate::pipeline::PipelineConfig::default(),
             crate::pipeline::DetectorToggles {
-                d4_d5_d6: false,
+                d3_d4_d5: false,
                 ..crate::pipeline::DetectorToggles::default()
             },
         ));
@@ -849,7 +849,7 @@ Connection: close
             DetectorToggles {
                 d1: true,
                 d2: false,
-                d4_d5_d6: false,
+                d3_d4_d5: false,
             },
         ));
         let checkpoint = Arc::new(CheckpointStore::new(tmp.path().join("ck.jsonl")));

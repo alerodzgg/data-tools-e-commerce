@@ -1,7 +1,7 @@
-//! D4+D5+D6 · Clasificación del texto detectado por OCR en un solo pase:
-//!   D4 — texto comercial   (palabras sueltas + frases multi-palabra)
-//!   D5 — logo en esquina   (texto de color dentro de las esquinas)
-//!   D6 — imagen placeholder ("coming soon", "no image"…)
+//! D3+D3+D4 · Clasificación del texto detectado por OCR en un solo pase:
+//!   D3 — texto comercial   (palabras sueltas + frases multi-palabra)
+//!   D3 — logo en esquina   (texto de color dentro de las esquinas)
+//!   D4 — imagen placeholder ("coming soon", "no image"…)
 //!
 //! `TextDetector::analyze_ocr_results`. El pre-filtro morfológico de
 //! candidatos a texto no está portado a propósito: en el original Python
@@ -187,7 +187,7 @@ impl TextDetector {
     }
 
     /// Lógica de clasificación pura: dada la imagen ya preparada para OCR y
-    /// sus resultados, decide D4/D5/D6. Separado de `detect` para poder
+    /// sus resultados, decide D3/D3/D4. Separado de `detect` para poder
     /// testear la clasificación sin depender de inferencia real.
     pub fn analyze_ocr_results(&self, prepared: &RgbImage, ocr_results: &[OcrResult]) -> DetectionResult {
         let (w, h) = prepared.dimensions();
@@ -215,7 +215,7 @@ impl TextDetector {
             .join(" ");
         let joined_words: HashSet<&str> = joined.split_whitespace().collect();
 
-        // D6 · imagen placeholder: coincidencia por subconjunto de palabras
+        // D5 · imagen placeholder: coincidencia por subconjunto de palabras
         // (orden-independiente, ya que el reader puede devolver fragmentos
         // desordenados).
         if let Some(ph) = self
@@ -224,16 +224,16 @@ impl TextDetector {
             .iter()
             .find(|p| p.split_whitespace().all(|w| joined_words.contains(w)))
         {
-            return DetectionResult::reject(format!("D6·Imagen placeholder: contiene '{ph}'"));
+            return DetectionResult::reject(format!("D5·Imagen placeholder: contiene '{ph}'"));
         }
 
-        // D4 · frase comercial multi-palabra (substring sobre el texto unido).
+        // D3 · frase comercial multi-palabra (substring sobre el texto unido).
         if let Some(cphrase) = self
             .commercial_phrases
             .iter()
             .find(|p| joined.contains(p.as_str()))
         {
-            reasons.push(format!("D4·Texto comercial (frase): '{cphrase}'"));
+            reasons.push(format!("D3·Texto comercial (frase): '{cphrase}'"));
         }
 
         for (r, text) in &valid {
@@ -257,14 +257,14 @@ impl TextDetector {
 
             if !hits.is_empty() {
                 reasons.push(format!(
-                    "D4·Texto comercial: '{text}' (palabras: {}, conf={:.2})",
+                    "D3·Texto comercial: '{text}' (palabras: {}, conf={:.2})",
                     hits.join(", "),
                     r.confidence
                 ));
                 continue;
             }
 
-            // D5 · logo/texto de color situado dentro de una esquina.
+            // D4 · logo/texto de color situado dentro de una esquina.
             let cx = r.bbox.iter().map(|p| p[0]).sum::<f32>() / 4.0;
             let cy = r.bbox.iter().map(|p| p[1]).sum::<f32>() / 4.0;
             let in_corner = corner_centers.iter().any(|(ex, ey)| {
@@ -274,7 +274,7 @@ impl TextDetector {
             });
             if in_corner && self.is_colored_watermark(prepared, &r.bbox) {
                 reasons.push(format!(
-                    "D5·Logo/texto en esquina: '{text}' (conf={:.2})",
+                    "D4·Logo/texto en esquina: '{text}' (conf={:.2})",
                     r.confidence
                 ));
                 continue;
@@ -360,7 +360,7 @@ mod tests {
         ];
         let res = det.analyze_ocr_results(&lienzo(200, 200), &results);
         assert!(res.detected);
-        assert!(res.reason.contains("D6"));
+        assert!(res.reason.contains("D5"));
     }
 
     #[test]
@@ -373,13 +373,13 @@ mod tests {
         )];
         let res = det.analyze_ocr_results(&lienzo(200, 200), &results);
         assert!(res.detected);
-        assert!(res.reason.contains("D4"));
+        assert!(res.reason.contains("D3"));
     }
 
     #[test]
     fn d4_no_dispara_con_palabra_que_solo_contiene_la_comercial_como_substring() {
         // "renew" no debe disparar por contener "new": el split es por palabra
-        // completa, no por substring (a diferencia de las frases D4).
+        // completa, no por substring (a diferencia de las frases D3).
         let det = TextDetector::new(TextDetectorConfig::default());
         let results = vec![ocr(
             [[10.0, 10.0], [80.0, 10.0], [80.0, 30.0], [10.0, 30.0]],
@@ -406,7 +406,7 @@ mod tests {
     fn d5_detecta_logo_de_color_en_esquina() {
         let det = TextDetector::new(TextDetectorConfig::default());
         let mut img = lienzo(200, 200);
-        // Mancha saturada en la esquina superior-izquierda, bajo el radio D5.
+        // Mancha saturada en la esquina superior-izquierda, bajo el radio D4.
         for y in 0..20 {
             for x in 0..20 {
                 img.put_pixel(x, y, Rgb([220, 30, 30]));
@@ -419,7 +419,7 @@ mod tests {
         )];
         let res = det.analyze_ocr_results(&img, &results);
         assert!(res.detected);
-        assert!(res.reason.contains("D5"));
+        assert!(res.reason.contains("D4"));
     }
 
     #[test]

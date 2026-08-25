@@ -1,6 +1,6 @@
 //! Extremo a extremo: servidor HTTP local sirviendo una imagen fixture real
 //! → `AsyncBatchProcessor` (descarga + detectores CPU + `OcrBatcher` + motor
-//! OCR real) → veredicto D6 esperado. Verifica el cableado completo entre
+//! OCR real) → veredicto D5 esperado. Verifica el cableado completo entre
 //! `downloader`, `pipeline` y `async_processor`, no solo cada pieza aislada.
 
 use std::collections::HashMap;
@@ -57,12 +57,12 @@ async fn pipeline_async_completo_rechaza_el_placeholder_via_ocr_real() {
     let df = df! { "Imagen 1" => [url.as_str()] }.unwrap();
     let url_columns = vec!["Imagen 1".to_string()];
 
-    // Solo D4-D6 (OCR): el objetivo es probar el cableado async + motor OCR
+    // Solo D3-D5 (OCR): el objetivo es probar el cableado async + motor OCR
     // real, no las heurísticas de color/bordes de D1-D2.
     let toggles = DetectorToggles {
         d1: false,
         d2: false,
-        d4_d5_d6: true,
+        d3_d4_d5: true,
     };
     let pipeline = Arc::new(ImagePipeline::from_config(PipelineConfig::default(), toggles));
 
@@ -103,7 +103,7 @@ async fn pipeline_async_completo_rechaza_el_placeholder_via_ocr_real() {
     assert_eq!(outcome.imagenes_analizadas, 1);
     assert_eq!(
         outcome.imagenes_rechazadas, 1,
-        "coming_soon.png debe rechazarse via D6"
+        "coming_soon.png debe rechazarse via D5"
     );
     let motivo = outcome
         .df
@@ -114,7 +114,7 @@ async fn pipeline_async_completo_rechaza_el_placeholder_via_ocr_real() {
         .get(0)
         .unwrap()
         .to_string();
-    assert!(motivo.contains("D6"), "motivo inesperado: {motivo}");
+    assert!(motivo.contains("D5"), "motivo inesperado: {motivo}");
 }
 
 /// Sirve una imagen DISTINTA según la ruta pedida, para que cada fila del
@@ -175,7 +175,7 @@ async fn el_pool_de_motores_no_altera_el_orden_de_los_veredictos() {
     let toggles = DetectorToggles {
         d1: false,
         d2: false,
-        d4_d5_d6: true,
+        d3_d4_d5: true,
     };
     let pipeline = Arc::new(ImagePipeline::from_config(PipelineConfig::default(), toggles));
 

@@ -1,5 +1,5 @@
 //! Orquestador de detectores: encadena D1-D3 (CPU, cortan en el primer
-//! rechazo) y luego D4-D6 (OCR) solo si hace falta. `ImagePipeline` expone
+//! rechazo) y luego D3-D5 (OCR) solo si hace falta. `ImagePipeline` expone
 //! la vía síncrona de una sola imagen; el batching/paralelismo async vive
 //! aparte, en `async_processor::AsyncBatchProcessor` (que llama a
 //! `run_fast`/`run_slow` de acá por cada imagen del lote).
@@ -26,7 +26,7 @@ pub struct PipelineConfig {
 pub struct DetectorToggles {
     pub d1: bool,
     pub d2: bool,
-    pub d4_d5_d6: bool,
+    pub d3_d4_d5: bool,
 }
 
 impl Default for DetectorToggles {
@@ -34,7 +34,7 @@ impl Default for DetectorToggles {
         Self {
             d1: true,
             d2: true,
-            d4_d5_d6: true,
+            d3_d4_d5: true,
         }
     }
 }
@@ -60,7 +60,7 @@ impl ImagePipeline {
         Self {
             d1: toggles.d1.then(|| SolidBannerDetector::new(banner)),
             d2: toggles.d2.then(|| NonNeutralBackgroundDetector::new(background)),
-            slow: toggles.d4_d5_d6.then(|| TextDetector::new(text)),
+            slow: toggles.d3_d4_d5.then(|| TextDetector::new(text)),
         }
     }
 
@@ -154,7 +154,7 @@ mod tests {
     fn run_fast_aprueba_sin_ocr_si_la_etapa_lenta_esta_deshabilitada() {
         let ctx = ImageContext::new(&imagen_neutra(100, 100));
         let toggles = DetectorToggles {
-            d4_d5_d6: false,
+            d3_d4_d5: false,
             ..DetectorToggles::default()
         };
         let pipeline = ImagePipeline::from_config(PipelineConfig::default(), toggles);
@@ -177,7 +177,7 @@ mod tests {
         let toggles = DetectorToggles {
             d1: false,
             d2: false,
-            d4_d5_d6: false,
+            d3_d4_d5: false,
         };
         let pipeline = ImagePipeline::from_config(PipelineConfig::default(), toggles);
         assert!(!pipeline.has_slow_stage());
@@ -194,7 +194,7 @@ mod tests {
         use std::path::PathBuf;
 
         let toggles = DetectorToggles {
-            d4_d5_d6: false,
+            d3_d4_d5: false,
             ..DetectorToggles::default()
         };
         let pipeline = ImagePipeline::from_config(PipelineConfig::default(), toggles);

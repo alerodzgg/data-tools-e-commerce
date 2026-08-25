@@ -139,10 +139,10 @@ mod tests {
         let mut resultados = HashMap::new();
         resultados.insert((0, "Imagen 1".to_string()), cr(0, "Imagen 1", false, "D1·Banner"));
         resultados.insert((0, "Imagen 3".to_string()), cr(0, "Imagen 3", false, "D2·Fondo"));
-        resultados.insert((1, "Imagen 2".to_string()), cr(1, "Imagen 2", false, "D5·Logo"));
+        resultados.insert((1, "Imagen 2".to_string()), cr(1, "Imagen 2", false, "D4·Logo"));
         resultados.insert(
             (1, "Imagen 4".to_string()),
-            cr(1, "Imagen 4", false, "D6·Placeholder"),
+            cr(1, "Imagen 4", false, "D5·Placeholder"),
         );
         (bloque, url_columns, resultados)
     }
@@ -159,7 +159,7 @@ mod tests {
             .iter()
             .collect();
         assert_eq!(motivos[0], Some("[Imagen 1] D1·Banner | [Imagen 3] D2·Fondo"));
-        assert_eq!(motivos[1], Some("[Imagen 2] D5·Logo | [Imagen 4] D6·Placeholder"));
+        assert_eq!(motivos[1], Some("[Imagen 2] D4·Logo | [Imagen 4] D5·Placeholder"));
     }
 
     #[test]

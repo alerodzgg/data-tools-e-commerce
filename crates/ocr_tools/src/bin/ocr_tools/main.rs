@@ -1,6 +1,6 @@
 //! Binario interactivo de `ocr_tools`: `CLI`/`FileWorkflow::run`/`main()`
 //! para la selección de archivos/columnas/detectores por menú, análisis
-//! (D1-D6) o inserción de imágenes en el Excel.
+//! (D1-D5) o inserción de imágenes en el Excel.
 //!
 //! Vive en `src/bin/` (no en la librería) a propósito: `ocr_tools` (el
 //! motor) no depende de `app_shell` (la interfaz) — misma regla que separa

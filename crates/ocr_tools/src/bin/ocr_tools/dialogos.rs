@@ -18,7 +18,7 @@ pub(crate) fn configurar_detectores() -> FlujoResult<DetectorToggles> {
     let etiquetas = [
         "D1 · Banner de color",
         "D2 · Fondo no neutro",
-        "D4·Texto / D5·Logo / D6·Placeholder (OCR)",
+        "D3 · Texto / D4 · Logo / D5 · Placeholder (OCR)",
     ];
     let activos = app_shell::menu_multiple_preseleccionado(
         "Detectores a activar (todos marcados por defecto):",
@@ -28,14 +28,14 @@ pub(crate) fn configurar_detectores() -> FlujoResult<DetectorToggles> {
     let toggles = DetectorToggles {
         d1: activos.contains(&etiquetas[0]),
         d2: activos.contains(&etiquetas[1]),
-        d4_d5_d6: activos.contains(&etiquetas[2]),
+        d3_d4_d5: activos.contains(&etiquetas[2]),
     };
     app_shell::info(&format!(
         "Detectores activos: {}",
         [
             toggles.d1.then_some("d1"),
             toggles.d2.then_some("d2"),
-            toggles.d4_d5_d6.then_some("d4_d5_d6"),
+            toggles.d3_d4_d5.then_some("d3_d4_d5"),
         ]
         .into_iter()
         .flatten()

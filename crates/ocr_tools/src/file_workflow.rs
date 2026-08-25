@@ -231,10 +231,10 @@ mod tests {
         let mut resultados = HashMap::new();
         resultados.insert((0, "Imagen 1".to_string()), cr(0, "Imagen 1", false, "D1·Banner"));
         resultados.insert((0, "Imagen 3".to_string()), cr(0, "Imagen 3", false, "D2·Fondo"));
-        resultados.insert((1, "Imagen 2".to_string()), cr(1, "Imagen 2", false, "D5·Logo"));
+        resultados.insert((1, "Imagen 2".to_string()), cr(1, "Imagen 2", false, "D4·Logo"));
         resultados.insert(
             (1, "Imagen 4".to_string()),
-            cr(1, "Imagen 4", false, "D6·Placeholder"),
+            cr(1, "Imagen 4", false, "D5·Placeholder"),
         );
 
         let df_result = materialize(&bloque, &url_columns, &resultados, 0).unwrap();
@@ -327,7 +327,7 @@ mod tests {
         assert_eq!(fila(1, "Imagen 3"), None);
         assert_eq!(
             fila(1, "Motivo_Rechazo").as_deref(),
-            Some("[Imagen 1] D5·Logo | [Imagen 2] D6·Placeholder")
+            Some("[Imagen 1] D4·Logo | [Imagen 2] D5·Placeholder")
         );
     }
 

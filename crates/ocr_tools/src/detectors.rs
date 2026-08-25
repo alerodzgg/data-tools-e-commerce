@@ -1,6 +1,6 @@
 //! D1-D2 · Detectores CPU del pipeline de rechazo de imágenes: banner de
 //! color sólido y fondo no neutro en las esquinas. Corren antes que el OCR
-//! (D4-D6) porque son órdenes de magnitud más baratos: medidos sobre 461
+//! (D3-D5) porque son órdenes de magnitud más baratos: medidos sobre 461
 //! imágenes reales dieron 0,011 s y 0,001 s por imagen, contra 4,4 s del OCR.
 //!
 //! Hubo un D3 (diagrama técnico, por Transformada de Hough) que se eliminó:
@@ -60,7 +60,7 @@ impl DetectionResult {
 pub struct ImageContext {
     pub width: u32,
     pub height: u32,
-    /// Imagen original (color): la necesita `TextDetector` (D4-D6) para su
+    /// Imagen original (color): la necesita `TextDetector` (D3-D5) para su
     /// propio resize + OCR, igual que `ImageContext.bgr` en el original.
     pub rgb: RgbImage,
     pub gray: GrayImage,
