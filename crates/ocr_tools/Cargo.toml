@@ -18,7 +18,7 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "net", "io-util", "test-util"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "net", "io-util", "test-util", "signal"] }
 umya-spreadsheet = { workspace = true }
 zip = { workspace = true }
 

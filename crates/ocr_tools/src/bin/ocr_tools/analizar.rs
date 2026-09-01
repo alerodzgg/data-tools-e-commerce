@@ -97,7 +97,15 @@ async fn ejecutar_archivo(
         1,
         std::time::Duration::from_millis(250),
         DESCARGAS_SIMULTANEAS,
-        500,
+        // Cada 50 y no cada 500: el buffer se vuelca a disco cada ~10s a
+        // 0,19 s/imagen, y una interrupción de spot cuesta 50 imágenes en vez
+        // de 500. La escritura corre en `spawn_blocking` y son unos pocos KB,
+        // así que no frena el análisis.
+        //
+        // Con 500 había un caso peor: un archivo de menos de 500 imágenes
+        // NUNCA llegaba al umbral, así que el checkpoint no se escribía hasta
+        // el final y un corte a mitad perdía todo el trabajo.
+        50,
     );
 
     let mut filas_total = 0u64;

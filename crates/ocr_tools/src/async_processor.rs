@@ -103,6 +103,34 @@ pub struct AsyncBatchProcessor {
     esperas_reintento: Vec<Duration>,
 }
 
+/// Se completa cuando el sistema pide terminar: `SIGTERM` o `SIGINT`.
+///
+/// AWS manda `SIGTERM` y da 2 minutos antes de reclamar una instancia spot.
+/// Sin escuchar la señal, esos 2 minutos no se usan para nada y el buffer de
+/// checkpoint aún no volcado se pierde: al reanudar hay que reanalizar
+/// imágenes que ya estaban listas. Volcar el buffer toma milisegundos.
+async fn apagado_solicitado() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        // Si no se pueden registrar los manejadores, se espera para siempre:
+        // quedarse sin apagado ordenado es preferible a abortar la corrida.
+        let (Ok(mut term), Ok(mut int)) = (signal(SignalKind::terminate()), signal(SignalKind::interrupt()))
+        else {
+            std::future::pending::<()>().await;
+            return;
+        };
+        tokio::select! {
+            _ = term.recv() => {}
+            _ = int.recv() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
+}
+
 impl AsyncBatchProcessor {
     /// Fija el calendario de reintentos diferidos. Solo para tests: en
     /// producción vale el de `new()`, y una espera de milisegundos no
@@ -419,24 +447,51 @@ impl AsyncBatchProcessor {
         }
 
         let consumo = async {
-            while let Some((task, veredicto)) = flujo.next().await {
-                let cr = CellResult {
-                    idx: task.idx,
-                    col: task.col.clone(),
-                    approved: veredicto.approved,
-                    reason: veredicto.reasons.join(" | "),
+            let apagado = apagado_solicitado();
+            tokio::pin!(apagado);
+            // El aviso se emite DESPUÉS del bucle: `avisar` es un
+            // `&mut dyn FnMut` y llamarlo dentro de una rama del `select!`
+            // solapa el préstamo con el resto del cuerpo.
+            let mut hubo_apagado = false;
+            loop {
+                // `biased` para que la señal gane siempre que esté lista: si
+                // el sistema ya pidió terminar, no tiene sentido empezar una
+                // imagen más.
+                let (task, veredicto) = tokio::select! {
+                    biased;
+                    () = &mut apagado => {
+                        hubo_apagado = true;
+                        break;
+                    }
+                    siguiente = flujo.next() => match siguiente {
+                        Some(par) => par,
+                        None => break,
+                    },
                 };
-                buffer_checkpoint.push(CheckpointEntry {
-                    idx: cr.idx,
-                    col: cr.col.clone(),
-                    approved: cr.approved,
-                    reason: cr.reason.clone(),
-                });
-                results.insert((cr.idx, cr.col.clone()), cr);
-                progreso(1);
-                if buffer_checkpoint.len() >= self.checkpoint_every.max(1) {
-                    volcar_checkpoint(&checkpoint, &mut buffer_checkpoint, avisar).await;
+                {
+                    let cr = CellResult {
+                        idx: task.idx,
+                        col: task.col.clone(),
+                        approved: veredicto.approved,
+                        reason: veredicto.reasons.join(" | "),
+                    };
+                    buffer_checkpoint.push(CheckpointEntry {
+                        idx: cr.idx,
+                        col: cr.col.clone(),
+                        approved: cr.approved,
+                        reason: cr.reason.clone(),
+                    });
+                    results.insert((cr.idx, cr.col.clone()), cr);
+                    progreso(1);
+                    if buffer_checkpoint.len() >= self.checkpoint_every.max(1) {
+                        volcar_checkpoint(&checkpoint, &mut buffer_checkpoint, avisar).await;
+                    }
                 }
+            }
+            if hubo_apagado {
+                avisar(
+                    "Apagado solicitado: se guarda el progreso antes de salir.                      Relanzar el mismo comando retoma desde acá.",
+                );
             }
             if let Some(batcher) = &batcher {
                 batcher.close();
@@ -906,6 +961,69 @@ Connection: close
         assert_eq!(
             con, sin,
             "un 404 se reintentó: el calendario se gasta en algo que no puede cambiar"
+        );
+    }
+    #[tokio::test(flavor = "multi_thread")]
+    async fn el_checkpoint_persiste_aunque_el_lote_no_llene_el_umbral() {
+        // Regresión: con `checkpoint_every` mayor que la cantidad de tareas,
+        // el buffer nunca alcanzaba el umbral. En una corrida real de 480
+        // imágenes con umbral 500 el archivo NO se creaba, y un corte a mitad
+        // perdía todo el trabajo. Lo que se fija acá es que el progreso
+        // termine en disco cualquiera sea el umbral.
+        let (url, _) = servidor_que_siempre_responde("404 Not Found");
+        let df = df! { "Imagen 1" => [url.as_str(), url.as_str(), url.as_str()] }.unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let ruta = tmp.path().join("ck.jsonl");
+        let checkpoint = Arc::new(CheckpointStore::new(&ruta));
+
+        let procesador = AsyncBatchProcessor::new(
+            DownloadConfig {
+                timeout: Duration::from_secs(2),
+                backoff: Duration::from_millis(1),
+                backoff_timeout: Duration::from_millis(1),
+                ..DownloadConfig::default()
+            },
+            1,
+            Duration::from_millis(10),
+            2,
+            // Umbral MUY por encima de las 3 tareas: si el volcado dependiera
+            // solo de llenarlo, el archivo quedaría vacío.
+            10_000,
+        );
+        let url_columns = vec!["Imagen 1".to_string()];
+        let _ = procesador
+            .process(
+                Bloque {
+                    df: &df,
+                    url_columns: &url_columns,
+                    idx_offset: 0,
+                },
+                Motor {
+                    pipeline: Arc::new(ImagePipeline::from_config(
+                        PipelineConfig::default(),
+                        DetectorToggles {
+                            d1: true,
+                            d2: false,
+                            d3_d4_d5: false,
+                        },
+                    )),
+                    readers: None,
+                },
+                Persistencia {
+                    checkpoint: checkpoint.clone(),
+                    cached: &HashMap::new(),
+                },
+                &mut |_: u64| {},
+                &mut |_: &str| {},
+            )
+            .await;
+
+        let guardado = checkpoint.load();
+        assert_eq!(
+            guardado.len(),
+            3,
+            "el progreso no llegó a disco: el checkpoint quedó con {} entradas",
+            guardado.len()
         );
     }
 }
