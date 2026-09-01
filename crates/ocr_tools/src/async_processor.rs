@@ -174,6 +174,14 @@ pub struct ProcessOutcome {
     pub df: DataFrame,
     pub imagenes_analizadas: usize,
     pub imagenes_rechazadas: usize,
+    /// El bloque se cortó por `SIGTERM`/`SIGINT` en vez de terminar.
+    ///
+    /// El llamador NO puede tratar esto como una corrida completa: escribiría
+    /// una salida parcial que parece entera y borraría el checkpoint, que es
+    /// justo lo único que permite retomar. Se separa del `Err` porque no es
+    /// un fallo: es un apagado ordenado, y la corrida sigue siendo válida —
+    /// solo que incompleta.
+    pub interrumpido: bool,
 }
 
 /// Tareas pendientes: celdas-URL de `url_columns` que no están en `cached` y
@@ -287,10 +295,12 @@ impl AsyncBatchProcessor {
             .collect();
         progreso(results.len() as u64);
 
-        if !tasks.is_empty() {
+        let interrumpido = if tasks.is_empty() {
+            false
+        } else {
             self.run_async(tasks, &mut results, motor, checkpoint, &mut progreso, &mut avisar)
-                .await;
-        }
+                .await
+        };
 
         let imagenes_analizadas = results.len();
         let imagenes_rechazadas = results.values().filter(|cr| !cr.approved).count();
@@ -299,6 +309,7 @@ impl AsyncBatchProcessor {
             df: df_result,
             imagenes_analizadas,
             imagenes_rechazadas,
+            interrumpido,
         })
     }
 
@@ -310,7 +321,7 @@ impl AsyncBatchProcessor {
         checkpoint: Arc<CheckpointStore>,
         progreso: &mut dyn FnMut(u64),
         avisar: &mut dyn FnMut(&str),
-    ) {
+    ) -> bool {
         let Motor { pipeline, readers } = motor;
         if pipeline.has_slow_stage() && readers.as_deref().map_or(true, <[Reader]>::is_empty) {
             // Invariante violada: si el pipeline tiene etapa OCR configurada,
@@ -330,7 +341,7 @@ impl AsyncBatchProcessor {
             }
             avisar(&motivo);
             progreso(tasks.len() as u64);
-            return;
+            return false;
         }
 
         // Bajo test (de esta librería o de tests/, vía la feature
@@ -367,7 +378,7 @@ impl AsyncBatchProcessor {
                     avisar(&format!("No se pudo escribir el checkpoint: {error}"));
                 }
                 progreso(tasks.len() as u64);
-                return;
+                return false;
             }
         };
         let resize_max_dim = self.download_cfg.resize_max_dim;
@@ -446,13 +457,13 @@ impl AsyncBatchProcessor {
             }
         }
 
+        let mut hubo_apagado = false;
         let consumo = async {
             let apagado = apagado_solicitado();
             tokio::pin!(apagado);
             // El aviso se emite DESPUÉS del bucle: `avisar` es un
             // `&mut dyn FnMut` y llamarlo dentro de una rama del `select!`
             // solapa el préstamo con el resto del cuerpo.
-            let mut hubo_apagado = false;
             loop {
                 // `biased` para que la señal gane siempre que esté lista: si
                 // el sistema ya pidió terminar, no tiene sentido empezar una
@@ -552,6 +563,7 @@ impl AsyncBatchProcessor {
         }
 
         volcar_checkpoint(&checkpoint, &mut buffer_checkpoint, avisar).await;
+        hubo_apagado
     }
 }
 

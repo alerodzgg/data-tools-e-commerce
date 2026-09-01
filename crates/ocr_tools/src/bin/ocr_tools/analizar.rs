@@ -113,7 +113,7 @@ async fn ejecutar_archivo(
     let mut imgs_rechazadas = 0u64;
     let mut offset: i64 = 0;
 
-    let resultado: AppResult<()> = async {
+    let resultado: AppResult<bool> = async {
         for hoja in xlsx_loader::iter_sheets(xlsx_path, app_shell::warn) {
             let bloque = file_workflow::alinear(hoja.df, &columnas)?;
             app_shell::info(&format!("Hoja '{}': {} filas.", hoja.nombre, bloque.height()));
@@ -145,6 +145,13 @@ async fn ejecutar_archivo(
                 .await?;
             barra.finish_and_clear();
 
+            // Una corrida interrumpida NO se escribe: el bloque quedó a
+            // medias y la salida parecería completa. El checkpoint ya tiene
+            // lo analizado, así que relanzar retoma sin perder nada.
+            if outcome.interrumpido {
+                return Ok(true);
+            }
+
             file_workflow::escribir_bloque(
                 &outcome.df,
                 &bloque,
@@ -159,18 +166,35 @@ async fn ejecutar_archivo(
             imgs_rechazadas += outcome.imagenes_rechazadas as u64;
             offset += bloque.height() as i64;
         }
-        Ok(())
+        Ok(false)
     }
     .await;
 
-    if let Err(e) = resultado {
-        // Corrida a medias: fuera las salidas parciales. El checkpoint NO se
-        // toca — el resume retoma exactamente donde iba.
+    let interrumpido = match resultado {
+        Ok(v) => v,
+        Err(e) => {
+            // Corrida a medias: fuera las salidas parciales. El checkpoint NO se
+            // toca — el resume retoma exactamente donde iba.
+            escritor_aprob.abortar().ok();
+            escritor_rech.abortar().ok();
+            let _ = std::fs::remove_file(&ruta_aprob);
+            let _ = std::fs::remove_file(&ruta_rech);
+            return Err(e);
+        }
+    };
+
+    // Mismo tratamiento que un fallo en cuanto a las salidas —se descartan
+    // las parciales— pero el checkpoint se CONSERVA y no es un error: el
+    // apagado fue ordenado y relanzar retoma donde iba.
+    if interrumpido {
         escritor_aprob.abortar().ok();
         escritor_rech.abortar().ok();
         let _ = std::fs::remove_file(&ruta_aprob);
         let _ = std::fs::remove_file(&ruta_rech);
-        return Err(e);
+        app_shell::info(
+            "Corrida interrumpida: no se escribieron salidas parciales y el checkpoint              quedó intacto. Relanzá el mismo comando para retomar.",
+        );
+        return Ok(());
     }
 
     escritor_aprob.cerrar()?;
