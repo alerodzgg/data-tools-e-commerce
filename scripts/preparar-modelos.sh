@@ -12,6 +12,11 @@
 #   - `target/release/models/`    donde el binario los busca en ejecución.
 #
 # Requiere que la instancia tenga un rol de IAM con lectura sobre el bucket.
+#
+# `--no-progress` porque bajo systemd la salida va al journal, que no puede
+# renderizar los códigos de escape del indicador de transferencia y los
+# guarda como binario: `[20.7K blob data]` por archivo. En una corrida de
+# días eso entierra los mensajes que sí importan.
 
 set -euo pipefail
 
@@ -20,8 +25,8 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 for destino in "$REPO/crates/ocr_tools/models" "$REPO/target/release/models"; do
     mkdir -p "$destino"
-    aws s3 cp "$BUCKET/craft_detector.onnx" "$destino/"
-    aws s3 cp "$BUCKET/recognizer_latin_g2.onnx" "$destino/"
+    aws s3 cp --no-progress "$BUCKET/craft_detector.onnx" "$destino/"
+    aws s3 cp --no-progress "$BUCKET/recognizer_latin_g2.onnx" "$destino/"
 done
 
 # Verificar que llegaron los modelos y no los punteros: un puntero de LFS pesa
