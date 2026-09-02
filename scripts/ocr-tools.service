@@ -29,11 +29,17 @@ ExecStart=/home/ubuntu/data-tools-e-commerce/scripts/correr-bloque.sh
 # las dos. systemd no lee ~/.bashrc, así que la ruta va acá explícita.
 Environment=LD_LIBRARY_PATH=/home/ubuntu/data-tools-e-commerce/target/release/runtime:/usr/local/cuda-12.9/lib64:/usr/local/cuda-13.2/lib
 
-# `always` y no `on-failure`: una interrupción de spot mata el proceso con
-# SIGTERM, que es una salida LIMPIA (código 0) porque el programa apaga
-# ordenado. Con `on-failure` no se relanzaría nunca y la corrida quedaría a
-# medias sin que nadie se entere.
-Restart=always
+# `on-failure` y NO `always`: al terminar bien, el programa borra el
+# checkpoint, asi que un relanzamiento reprocesa el bloque entero desde cero
+# y escribe otra salida con sufijo `(1)`, `(2)`... En la prueba dejo 38
+# archivos en S3 y quemo GPU repitiendo trabajo ya hecho.
+#
+# La recuperacion tras una interrupcion de spot NO depende de esto: la da el
+# arranque al encender la maquina (`systemctl enable`). AWS se lleva la
+# instancia, vuelve, el servicio arranca solo y el checkpoint retoma. Lo que
+# `Restart=` cubre es que el proceso se caiga a mitad, y para eso alcanza
+# `on-failure`.
+Restart=on-failure
 RestartSec=60
 
 # Margen para que el apagado ordenado vuelque el checkpoint. AWS da 2 minutos
