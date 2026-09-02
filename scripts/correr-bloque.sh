@@ -25,7 +25,11 @@ fi
 BUCKET="${OCR_BUCKET_RAIZ:-s3://ocr-tools-alerodzgg}"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DATOS="$HOME/datos"
-SALIDA="$HOME/salida"
+# Una carpeta POR BLOQUE, no una compartida: `aws s3 cp --recursive` sube todo
+# lo que encuentra, asi que una salida de otra corrida se colaria en los
+# resultados de esta sin que nadie lo note. Aislar por bloque lo hace
+# imposible en vez de depender de acordarse de limpiar.
+SALIDA="$HOME/salida/$BLOQUE"
 
 echo "=== Bloque: $BLOQUE ==="
 
