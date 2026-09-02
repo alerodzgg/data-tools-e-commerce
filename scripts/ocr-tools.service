@@ -1,0 +1,45 @@
+# Servicio que corre UN bloque de imágenes sin que nadie lo atienda.
+#
+# Instalación (una vez, antes de crear la AMI):
+#   sudo cp scripts/ocr-tools.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable ocr-tools
+#
+# Qué bloque procesa cada instancia sale de /etc/ocr-tools.env, que se escribe
+# por User Data al lanzarla:
+#   echo "BLOQUE=bloque1" > /etc/ocr-tools.env
+
+[Unit]
+Description=Analisis OCR de un bloque de imagenes
+# `network-online` y no `network`: el script baja modelos y datos de S3 antes
+# de hacer nada, y arrancar sin red lo haría fallar en el primer comando.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/data-tools-e-commerce
+ExecStart=/home/ubuntu/data-tools-e-commerce/scripts/correr-bloque.sh
+
+# CUDA vive en 12.9 y cuDNN en el árbol de 13.2; ONNX Runtime 1.22 necesita
+# las dos. systemd no lee ~/.bashrc, así que la ruta va acá explícita.
+Environment=LD_LIBRARY_PATH=/home/ubuntu/data-tools-e-commerce/target/release/runtime:/usr/local/cuda-12.9/lib64:/usr/local/cuda-13.2/lib
+
+# `always` y no `on-failure`: una interrupción de spot mata el proceso con
+# SIGTERM, que es una salida LIMPIA (código 0) porque el programa apaga
+# ordenado. Con `on-failure` no se relanzaría nunca y la corrida quedaría a
+# medias sin que nadie se entere.
+Restart=always
+RestartSec=60
+
+# Margen para que el apagado ordenado vuelque el checkpoint. AWS da 2 minutos
+# al reclamar una instancia spot; volcarlo tarda milisegundos, pero un lote de
+# OCR en vuelo puede necesitar unos segundos más.
+TimeoutStopSec=90
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
