@@ -24,6 +24,7 @@
 //! generación de tramos y el recorrido del libro.
 
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 
 use commerce_core::{
     abrir_libro, columna_texto, leer_hoja_por_nombre, nombres_hojas_libro, tomar_filas, CoreError,
@@ -116,7 +117,26 @@ pub struct Rango {
 /// 500 y sin el recorte el último enlace pediría precios hasta 502: no es un
 /// error visible —eBay lo aceptaría— pero rasparía artículos fuera del rango
 /// que la búsqueda original cubría.
-pub fn rangos(paso: Paso) -> Vec<Rango> {
+/// Solo hay CUATRO tablas posibles y no dependen de la tienda, así que se
+/// calculan una vez por proceso y se prestan. Devolver un `Vec` nuevo hacía
+/// una asignación POR TIENDA FRAGMENTADA —10.748 en la corrida real, de hasta
+/// 245 elementos cada una— para entregar siempre el mismo contenido.
+pub fn rangos(paso: Paso) -> &'static [Rango] {
+    static DIEZ: LazyLock<Vec<Rango>> = LazyLock::new(|| calcular_tramos(Paso::Diez));
+    static CINCO: LazyLock<Vec<Rango>> = LazyLock::new(|| calcular_tramos(Paso::Cinco));
+    static TRES: LazyLock<Vec<Rango>> = LazyLock::new(|| calcular_tramos(Paso::Tres));
+    static DOS: LazyLock<Vec<Rango>> = LazyLock::new(|| calcular_tramos(Paso::Dos));
+    // `match` exhaustivo y sin rama `_`: un paso nuevo no compila hasta tener
+    // su tabla, en vez de caer en la de otro paso en silencio.
+    match paso {
+        Paso::Diez => &DIEZ,
+        Paso::Cinco => &CINCO,
+        Paso::Tres => &TRES,
+        Paso::Dos => &DOS,
+    }
+}
+
+fn calcular_tramos(paso: Paso) -> Vec<Rango> {
     let paso = paso.valor();
     let mut tramos = Vec::new();
     let mut lo = PRECIO_MIN;
@@ -150,10 +170,13 @@ pub enum ErrorFragmentar {
         COLUMNA_ENLACE
     )]
     SinColumnasObligatorias { archivo: PathBuf },
+    // Un solo camino para los errores de polars: `CoreError` ya los envuelve.
+    // Con una variante `Polars` propia, el MISMO error llegaba como
+    // `Polars(..)` desde `columna_texto` y como `Core(Polars(..))` desde
+    // `tomar_filas`, asi que un `match` del llamador tenia que acordarse de
+    // cubrir las dos.
     #[error(transparent)]
     Core(#[from] CoreError),
-    #[error(transparent)]
-    Polars(#[from] PolarsError),
 }
 
 /// Qué se hizo con UNA fila.
@@ -218,19 +241,35 @@ impl Resumen {
     pub fn tiendas_totales(&self) -> usize {
         self.tiendas_fragmentadas + self.sin_fragmentar()
     }
-}
 
-impl Resumen {
-    fn sumar(&mut self, otro: &Resumen) {
-        self.hojas_procesadas += otro.hojas_procesadas;
-        self.hojas_sin_columnas += otro.hojas_sin_columnas;
-        self.filas_entrada += otro.filas_entrada;
-        self.filas_salida += otro.filas_salida;
-        self.tiendas_fragmentadas += otro.tiendas_fragmentadas;
-        self.filas_generadas += otro.filas_generadas;
-        self.filas_bajo_umbral += otro.filas_bajo_umbral;
-        self.enlaces_invalidos += otro.enlaces_invalidos;
-        self.publicaciones_ilegibles += otro.publicaciones_ilegibles;
+    /// Acumula las cuentas de una hoja en el total del libro.
+    ///
+    /// Se desestructura SIN `..` a proposito: agregar un campo a `Resumen` y
+    /// olvidarlo aca deja de compilar. Con la suma campo a campo anterior
+    /// compilaba igual y el total de un libro multi-hoja salia mal en
+    /// silencio — el defecto exacto que se busca hacer imposible, y que ya
+    /// aparecio dos veces mientras se escribia este modulo.
+    fn sumar(&mut self, otro: Resumen) {
+        let Resumen {
+            hojas_procesadas,
+            hojas_sin_columnas,
+            filas_entrada,
+            filas_salida,
+            tiendas_fragmentadas,
+            filas_generadas,
+            filas_bajo_umbral,
+            enlaces_invalidos,
+            publicaciones_ilegibles,
+        } = otro;
+        self.hojas_procesadas += hojas_procesadas;
+        self.hojas_sin_columnas += hojas_sin_columnas;
+        self.filas_entrada += filas_entrada;
+        self.filas_salida += filas_salida;
+        self.tiendas_fragmentadas += tiendas_fragmentadas;
+        self.filas_generadas += filas_generadas;
+        self.filas_bajo_umbral += filas_bajo_umbral;
+        self.enlaces_invalidos += enlaces_invalidos;
+        self.publicaciones_ilegibles += publicaciones_ilegibles;
     }
 }
 
@@ -275,7 +314,7 @@ pub fn fragmentar_archivo(
         // archivo vacío pero bien formado fallara con "ninguna hoja tiene las
         // columnas obligatorias", que manda a buscar un problema que no está.
         let (salida, resumen) = fragmentar_hoja(&df, opciones.umbral, hoja, &mut avisar)?;
-        total.sumar(&resumen);
+        total.sumar(resumen);
         if let Err(error) = escritor.escribir(&salida, Some(hoja)) {
             // Sin esto, un fallo a mitad dejaría un .xlsx truncado en la
             // carpeta de salida con pinta de resultado bueno.
@@ -321,8 +360,11 @@ pub fn fragmentar_hoja(
     };
 
     resumen.hojas_procesadas = 1;
-    let publicaciones = columna_texto(df, &col_pub)?;
-    let enlaces = columna_texto(df, &col_enlace)?;
+    let publicaciones = columna_texto(df, &col_pub).map_err(CoreError::from)?;
+    // `mut` porque los enlaces que se copian tal cual se MUEVEN a la salida
+    // (`Option::take`) en vez de clonarse: son una String por fila que no
+    // vuelve a leerse.
+    let mut enlaces = columna_texto(df, &col_enlace).map_err(CoreError::from)?;
 
     // `indices` dice de qué fila de ENTRADA sale cada fila de salida (una fila
     // fragmentada aparece tantas veces como tramos genere); `nuevos` trae el
@@ -362,7 +404,7 @@ pub fn fragmentar_hoja(
             Destino::BajoUmbral => {
                 resumen.filas_bajo_umbral += 1;
                 indices.push(fila);
-                nuevos.push(enlaces[fila].clone());
+                nuevos.push(enlaces[fila].take());
             }
             Destino::EnlaceInvalido(error) => {
                 resumen.enlaces_invalidos += 1;
@@ -372,7 +414,7 @@ pub fn fragmentar_hoja(
                     fila + 2
                 ));
                 indices.push(fila);
-                nuevos.push(enlaces[fila].clone());
+                nuevos.push(enlaces[fila].take());
             }
             Destino::PublicacionesIlegibles => {
                 resumen.publicaciones_ilegibles += 1;
@@ -382,13 +424,15 @@ pub fn fragmentar_hoja(
                     fila + 2
                 ));
                 indices.push(fila);
-                nuevos.push(enlaces[fila].clone());
+                nuevos.push(enlaces[fila].take());
             }
         }
     }
 
     let mut salida = tomar_filas(df, &indices)?;
-    salida.with_column(Column::new(col_enlace.as_str().into(), nuevos))?;
+    salida
+        .with_column(Column::new(col_enlace.as_str().into(), nuevos))
+        .map_err(CoreError::from)?;
     resumen.filas_salida = salida.height();
     Ok((salida, resumen))
 }
@@ -492,18 +536,13 @@ mod tests {
             for par in tramos.windows(2) {
                 assert_eq!(par[1].lo, par[0].hi + 1, "paso {:?}: {par:?}", paso);
             }
-            for tramo in &tramos {
+            // Contigüidad + último == 500 implica que NINGÚN tramo se pasa de
+            // 500, que es lo que verifica el recorte con paso 3 (la
+            // progresión llegaría a 502). No hace falta un test aparte.
+            for tramo in tramos {
                 assert!(tramo.lo <= tramo.hi, "paso {:?}: {tramo:?}", paso);
+                assert!(tramo.hi <= PRECIO_MAX, "paso {:?}: {tramo:?}", paso);
             }
-        }
-    }
-
-    #[test]
-    fn ningun_tramo_se_pasa_de_quinientos() {
-        // Con paso 3 la progresión no cae justo en 500: sin el recorte, el
-        // último tramo pediría hasta 502.
-        for paso in [Paso::Diez, Paso::Cinco, Paso::Tres, Paso::Dos] {
-            assert!(rangos(paso).iter().all(|t| t.hi <= PRECIO_MAX));
         }
     }
 
