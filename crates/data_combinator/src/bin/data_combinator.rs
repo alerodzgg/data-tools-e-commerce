@@ -342,42 +342,47 @@ fn fragmentar_enlaces() -> AppResult<()> {
     )?;
 
     app_shell::success(&format!(
-        "Listo: {} tiendas fragmentadas en {} enlaces. {} filas de entrada → {} de salida, en '{}'.",
-        resumen.tiendas_fragmentadas,
+        "Listo: {} enlaces generados en '{}' ({} filas de entrada → {} de salida).",
         resumen.filas_generadas,
+        destino.file_name().unwrap_or_default().to_string_lossy(),
         resumen.filas_entrada,
         resumen.filas_salida,
-        destino.file_name().unwrap_or_default().to_string_lossy()
     ));
 
-    // Estas dos líneas se imprimen SIEMPRE, incluso valiendo cero. Antes solo
-    // aparecían si había algo que decir, y entonces el silencio era ambiguo:
-    // no se distinguía "no hubo ningún error" de "esto no revisa errores".
-    // Que el informe afirme "0 errores" es justamente la información que se
-    // quería.
+    // El total y el reparto van SIEMPRE, incluso valiendo cero. Antes solo se
+    // imprimía lo fragmentado y las categorías con valor: el silencio era
+    // ambiguo —no se distinguía "no hubo errores" de "esto no revisa
+    // errores"— y no había forma de ver cuántas tiendas se consideraron en
+    // total sin sumar a mano.
     app_shell::info(&format!(
-        "Sin fragmentar: {} filas por debajo del umbral ({umbral} publicaciones). No son un error.",
+        "Tiendas: {} en total → {} fragmentadas, {} sin fragmentar.",
+        resumen.tiendas_totales(),
+        resumen.tiendas_fragmentadas,
+        resumen.sin_fragmentar(),
+    ));
+    app_shell::info(&format!(
+        "  · {} por debajo del umbral ({umbral} publicaciones). No son un error.",
         resumen.filas_bajo_umbral
     ));
     if resumen.errores() == 0 {
-        app_shell::info("Errores: 0. Todas las tiendas que llegaban al umbral se fragmentaron.");
+        app_shell::info("  · 0 con error: todas las que llegaban al umbral se fragmentaron.");
     } else {
         // Una tienda que se quedó sin tramos es trabajo que el scraper no va
         // a hacer, y enterarse al final de la corrida de Web Scraper Cloud
         // sale mucho más caro que leerlo acá.
         app_shell::warn(&format!(
-            "Errores: {} filas llegaban al umbral y quedaron SIN fragmentar.",
+            "  · {} llegaban al umbral y NO se pudieron fragmentar:",
             resumen.errores()
         ));
         if resumen.enlaces_invalidos > 0 {
             app_shell::warn(&format!(
-                "  · {} con un enlace que no se pudo fragmentar.",
+                "      {} con un enlace irreconocible.",
                 resumen.enlaces_invalidos
             ));
         }
         if resumen.publicaciones_ilegibles > 0 {
             app_shell::warn(&format!(
-                "  · {} con un valor no numérico en '{}'.",
+                "      {} con un valor no numérico en '{}'.",
                 resumen.publicaciones_ilegibles,
                 data_combinator::fragmentar_ebay::COLUMNA_PUBLICACIONES
             ));

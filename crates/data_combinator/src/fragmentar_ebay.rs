@@ -205,6 +205,19 @@ impl Resumen {
     pub fn errores(&self) -> usize {
         self.enlaces_invalidos + self.publicaciones_ilegibles
     }
+
+    /// Tiendas que quedaron con su enlace original: las que no llegan al
+    /// umbral MÁS las que fallaron. Se calcula desde la partición y no como
+    /// `filas_entrada - fragmentadas` para que siga cuadrando aunque el libro
+    /// traiga hojas copiadas sin procesar.
+    pub fn sin_fragmentar(&self) -> usize {
+        self.filas_bajo_umbral + self.errores()
+    }
+
+    /// Tiendas consideradas: una por fila de las hojas procesadas.
+    pub fn tiendas_totales(&self) -> usize {
+        self.tiendas_fragmentadas + self.sin_fragmentar()
+    }
 }
 
 impl Resumen {

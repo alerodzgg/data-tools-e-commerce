@@ -326,6 +326,15 @@ fn los_cuatro_contadores_particionan_la_entrada() {
         "los contadores no suman la entrada: alguna fila se contó dos veces o ninguna"
     );
     assert_eq!(r.errores(), 2);
+
+    // Los tres números del informe salen de la misma partición, así que no
+    // pueden contradecirse entre sí: total = fragmentadas + sin fragmentar.
+    assert_eq!(r.tiendas_totales(), r.filas_entrada);
+    assert_eq!(r.sin_fragmentar(), 3);
+    assert_eq!(
+        r.tiendas_fragmentadas + r.sin_fragmentar(),
+        r.tiendas_totales()
+    );
 }
 
 #[test]
