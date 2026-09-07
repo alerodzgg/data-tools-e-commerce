@@ -44,7 +44,7 @@ const HERRAMIENTAS: &[Herramienta] = &[
     },
     Herramienta {
         binario: "data_combinator",
-        descripcion: "DATA combinator — combinar varios archivos en uno",
+        descripcion: "DATA combinator — combinar archivos / fragmentar enlaces de eBay",
     },
 ];
 

@@ -18,7 +18,7 @@ of [Polars](https://pola.rs): native binaries, no runtime dependencies.
 | **Publications validator** | `publications_validator` | Validates and cleans titles (7 rules + brand list), deduplicates by title keeping the best price. |
 | **OCR tools** | `ocr_tools` | Filters product images by their content: banners, non-neutral backgrounds, diagrams, commercial text, logos and placeholders (CPU detectors + OCR via `ort`/ONNX Runtime). Also embeds images from a URL column into the spreadsheet. |
 | **ETL tools** | `etl_tools` | VLOOKUP (exact and partial by whole word), duplicates, deletion by keyword, Excel-style sorting, character counting, flagging rows that contain given words. |
-| **DATA combinator** | `data_combinator` | Merges several XLSX/CSV files into a single output, with global ordering (external on-disk merge for 10M+ rows) and splitting by sheets or files. |
+| **DATA combinator** | `data_combinator` | Merges several XLSX/CSV files into a single output, with global ordering (external on-disk merge for 10M+ rows) and splitting by sheets or files. Also fragments eBay store links into price bands for Web Scraper Cloud. |
 
 All five launch from a single menu, `hub`. Everything is driven by **arrow-key
 menus** — no arguments to memorise. XLSX files are written by emitting OOXML
@@ -92,6 +92,66 @@ Installs the six binaries into `/usr/lib/data-tools-e-commerce/` (along with
 `models/`/`runtime/` for `ocr_tools`) and leaves a `data-tools-e-commerce`
 command on the PATH (a symlink to `hub`, created by the package's `postinst`).
 To uninstall: `sudo dpkg -r data-tools-e-commerce`.
+
+### Fragmenting eBay store links (DATA combinator)
+
+eBay stops paginating a search long before it has shown a large store's whole
+catalogue. A store with 300,000 listings cannot be scraped from a single link:
+the first pages come back and the rest simply does not exist as far as the
+scraper is concerned. The way out is to split the store into many *narrow*
+searches — one per price band — each of which does fit.
+
+`data_combinator` offers this as its second mode. It reads **every sheet** of
+the chosen `.xlsx`, and for each row it needs two columns:
+
+| Column | Meaning |
+| --- | --- |
+| `publicaciones` | how many listings the store has (integer) |
+| `resultado link` | the store's base link on eBay |
+
+Column names are matched ignoring case and extra whitespace, so
+`Resultado Link` and `PUBLICACIONES` are found too.
+
+On start the tool asks for the **listing threshold** in the terminal (Enter
+accepts the default, 9000). Rows at or above it are fragmented; the rest are
+copied untouched.
+
+The step between `_udlo` and `_udhi` depends on the store's size:
+
+| Listings | Step | Bands produced |
+| --- | --- | --- |
+| up to 100,000 | 10 | `10–20`, `21–30`, … `491–500` |
+| 100,001 – 500,000 | 5 | `10–15`, `16–20`, … `496–500` |
+| 500,001 – 800,000 | 3 | `10–13`, `14–16`, … `500–500` |
+| 800,001 and up | 2 | `10–12`, `13–14`, … `499–500` |
+
+The first band is deliberately wider (10 to `10 + step`), which is what rounds
+the start to a round number; from there each band starts one dollar after the
+previous one ends, so `$10`–`$500` is covered with no gaps and no overlaps. The
+last band is clipped at 500 — with step 3 the progression does not land exactly
+on it, and without the clip the final link would ask for prices up to 502.
+
+Two link shapes are recognised, and each is rebuilt with its parameters in
+their original order:
+
+```
+…&isRefine=true&_sop=15&_udlo=10&_udhi=500&_ipg=240     (_sop before the range)
+…&isRefine=true&_udlo=10&_udhi=500&_ipg=240&_sop=16     (_sop last)
+```
+
+**The original row is removed** once its bands have been generated: it is
+already represented by them, and leaving it in would make the scraper re-run
+the wide search that does not work. Everything else on the row (store name and
+any other columns) is copied identically onto every band.
+
+Nothing is dropped silently. A row that reaches the threshold but whose link
+cannot be parsed is **left intact** and reported, as is a `publicaciones` cell
+that is not a number; the final summary counts both. A sheet without the two
+columns is copied unchanged with a warning — real workbooks carry a notes sheet
+next to the data one — and the run only fails if *no* sheet has them.
+
+The input file is never modified: the result is a new `.xlsx` in the output
+folder.
 
 ### Massive-scale image analysis on AWS (millions of images)
 
@@ -229,7 +289,7 @@ publications_builder    ← build listings (eBay / Amazon).
 publications_validator  ← validate and clean titles.
 ocr_tools               ← filter images by their content.
 etl_tools               ← VLOOKUP, duplicates, character counts, Encontrar.
-data_combinator         ← merge several files into one.
+data_combinator         ← merge several files into one; fragment eBay store links.
 ```
 
 **Golden rule:** `commerce_core` knows nothing about the interface (it does not
@@ -390,7 +450,7 @@ de runtime.
 | **Publications validator** | `publications_validator` | Valida y limpia los títulos (7 reglas + lista de marcas), deduplica por título conservando el mejor precio. |
 | **OCR tools** | `ocr_tools` | Filtra imágenes de producto por su contenido: banners, fondos no neutros, diagramas, texto comercial, logos y placeholders (detectores CPU + OCR con `ort`/ONNX Runtime). También incrusta en el Excel las imágenes de una columna de URLs. |
 | **ETL tools** | `etl_tools` | BUSCARV (exacto y parcial por palabra completa), duplicados, borrado por palabra, ordenar estilo Excel, contar caracteres, marcar filas que contienen palabras. |
-| **DATA combinator** | `data_combinator` | Combina varios XLSX/CSV en una salida única, con orden global (mezcla externa en disco para 10M+ filas) y división por hojas o archivos. |
+| **DATA combinator** | `data_combinator` | Combina varios XLSX/CSV en una salida única, con orden global (mezcla externa en disco para 10M+ filas) y división por hojas o archivos. También fragmenta enlaces de tienda de eBay en tramos de precio para Web Scraper Cloud. |
 
 Las cinco se lanzan desde un menú único, `hub`. Todo se maneja con **menús de
 flechas** en la terminal — sin argumentos que memorizar. Los XLSX se escriben
@@ -465,6 +525,68 @@ Instala los 6 binarios en `/usr/lib/data-tools-e-commerce/` (junto con
 `models/`/`runtime/` de `ocr_tools`) y deja un comando `data-tools-e-commerce`
 en el PATH (símlink a `hub`, creado por el `postinst` del paquete). Para
 desinstalar: `sudo dpkg -r data-tools-e-commerce`.
+
+### Fragmentar enlaces de tienda de eBay (DATA combinator)
+
+eBay corta la paginación de una búsqueda mucho antes de mostrar el catálogo
+completo de una tienda grande. Una tienda de 300.000 publicaciones no se puede
+raspar con un solo enlace: vuelven las primeras páginas y el resto,
+sencillamente, no existe para el scraper. La salida es partir la tienda en
+muchas búsquedas *estrechas* —una por tramo de precio— que individualmente sí
+caben.
+
+`data_combinator` lo ofrece como su segundo modo. Lee **todas las hojas** del
+`.xlsx` elegido, y de cada fila necesita dos columnas:
+
+| Columna | Significado |
+| --- | --- |
+| `publicaciones` | cuántas publicaciones tiene la tienda (entero) |
+| `resultado link` | enlace base de la tienda en eBay |
+
+Los nombres se buscan ignorando mayúsculas y espacios de más, así que
+`Resultado Link` y `PUBLICACIONES` también se encuentran.
+
+Al arrancar, la herramienta pide por terminal el **umbral de publicaciones**
+(Enter acepta el valor por defecto, 9000). Las filas que lo alcanzan o lo
+superan se fragmentan; el resto se copia sin tocar.
+
+El salto entre `_udlo` y `_udhi` depende del tamaño de la tienda:
+
+| Publicaciones | Paso | Tramos generados |
+| --- | --- | --- |
+| hasta 100.000 | 10 | `10–20`, `21–30`, … `491–500` |
+| 100.001 – 500.000 | 5 | `10–15`, `16–20`, … `496–500` |
+| 500.001 – 800.000 | 3 | `10–13`, `14–16`, … `500–500` |
+| 800.001 en adelante | 2 | `10–12`, `13–14`, … `499–500` |
+
+El primer tramo es más ancho a propósito (de 10 a `10 + paso`), que es lo que
+redondea el arranque a la decena; a partir de ahí cada tramo empieza un dólar
+después de donde terminó el anterior, así que de `$10` a `$500` no queda ningún
+hueco ni solapamiento. El último se recorta a 500: con paso 3 la progresión no
+cae justo ahí, y sin el recorte el enlace final pediría precios hasta 502.
+
+Se reconocen dos formas de enlace, y cada una se reconstruye con sus
+parámetros en el orden original:
+
+```
+…&isRefine=true&_sop=15&_udlo=10&_udhi=500&_ipg=240     (_sop antes del rango)
+…&isRefine=true&_udlo=10&_udhi=500&_ipg=240&_sop=16     (_sop al final)
+```
+
+**La fila original se elimina** una vez generados sus tramos: ya queda
+representada por ellos, y dejarla haría que el scraper repitiera la búsqueda
+ancha que justamente no funciona. Todo lo demás de la fila (nombre de la tienda
+y cualquier otra columna) se copia idéntico a cada tramo.
+
+Nada se pierde en silencio. Una fila que llega al umbral pero cuyo enlace no se
+puede parsear queda **intacta** y se reporta, igual que una celda de
+`publicaciones` que no es un número; el resumen final cuenta las dos cosas. Una
+hoja sin las dos columnas se copia sin cambios y con aviso —un libro real trae
+una hoja de notas al lado de la de datos— y la corrida solo falla si *ninguna*
+hoja las tiene.
+
+El archivo de entrada nunca se modifica: el resultado es un `.xlsx` nuevo en la
+carpeta de salida.
 
 ### Análisis de imágenes a escala masiva en AWS (millones de imágenes)
 
@@ -610,7 +732,7 @@ publications_builder    ← construir publicaciones (eBay / Amazon).
 publications_validator  ← validar y limpiar títulos.
 ocr_tools               ← filtrar imágenes por su contenido.
 etl_tools               ← BUSCARV, duplicados, caracteres, Encontrar.
-data_combinator         ← combinar varios archivos en uno.
+data_combinator         ← combinar varios archivos en uno; fragmentar enlaces de eBay.
 ```
 
 **Regla de oro:** `commerce_core` no sabe nada de la interfaz (no imprime, no

@@ -15,6 +15,7 @@
 pub mod combinar;
 pub mod constantes;
 pub mod escritor_particionado;
+pub mod fragmentar_ebay;
 pub mod lectura;
 pub mod normalizar;
 pub mod orden;
@@ -24,6 +25,10 @@ pub use constantes::{
     UmbralesLoteCsv, UmbralesOrden, COLUMNAS_RESERVADAS, FILAS_POR_HOJA, SOPORTADOS_ARCHIVOS,
 };
 pub use escritor_particionado::EscritorParticionado;
+pub use fragmentar_ebay::{
+    fragmentar_archivo, fragmentar_hoja, rangos, EnlaceTienda, ErrorFragmentar, OpcionesFragmentar,
+    Paso, Rango, Resumen, UMBRAL_POR_DEFECTO,
+};
 pub use lectura::{iter_chunks, listar_archivos, LotesCsv};
 pub use normalizar::normalizar;
 pub use orden::{ordenar_excel_df, ClaveExcel};

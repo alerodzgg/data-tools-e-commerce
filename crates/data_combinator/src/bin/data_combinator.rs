@@ -1,5 +1,11 @@
-//! Binario interactivo de `data_combinator`: elegir archivos, columnas,
-//! formato, división y orden; combinar.
+//! Binario interactivo de `data_combinator`. Dos modos:
+//!
+//! - COMBINAR: elegir archivos, columnas, formato, división y orden.
+//! - FRAGMENTAR: partir los enlaces de tienda de eBay en tramos de precio
+//!   para Web Scraper Cloud.
+//!
+//! Los dos comparten la carpeta de entrada/salida y el estilo de menús, pero
+//! no se cruzan en ningún otro punto: el modo se elige una vez al arrancar.
 
 // Cada `src/bin/*` es un crate root propio: NO hereda los lints de `lib.rs`,
 // asi que la politica se repite aca. Un panic en produccion aborta el proceso
@@ -11,8 +17,10 @@ use std::path::PathBuf;
 
 use app_shell::{FlujoError, FlujoResult};
 use commerce_core::{columnas_union, total_filas, CoreError};
+use data_combinator::fragmentar_ebay::ErrorFragmentar;
 use data_combinator::{
-    combinar, Division, Formato, OpcionesCombinar, UmbralesLoteCsv, UmbralesOrden, COLUMNAS_RESERVADAS,
+    combinar, fragmentar_archivo, Division, Formato, OpcionesCombinar, OpcionesFragmentar,
+    UmbralesLoteCsv, UmbralesOrden, COLUMNAS_RESERVADAS, UMBRAL_POR_DEFECTO,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -21,6 +29,8 @@ enum AppError {
     Flujo(#[from] FlujoError),
     #[error(transparent)]
     Core(#[from] CoreError),
+    #[error(transparent)]
+    Fragmentar(#[from] ErrorFragmentar),
 }
 
 type AppResult<T> = Result<T, AppError>;
@@ -112,8 +122,8 @@ fn elegir_division(formato: Formato) -> FlujoResult<Division> {
     })
 }
 
-fn ejecutar() -> AppResult<()> {
-    app_shell::mostrar_cabecera("DATA COMBINATOR — combinar varios archivos en uno");
+fn combinar_archivos() -> AppResult<()> {
+    app_shell::mostrar_subcabecera("Combinar varios archivos en uno");
 
     let disponibles = listar_archivos(&app_shell::ruta_entrada());
     if disponibles.is_empty() {
@@ -268,6 +278,151 @@ fn ejecutar() -> AppResult<()> {
         ));
     }
     Ok(())
+}
+
+/// Pide el umbral de publicaciones por terminal.
+///
+/// Repreguntar en vez de aceptar cualquier cosa: un umbral mal escrito no da
+/// ningún error visible, solo fragmenta las tiendas equivocadas —o ninguna— y
+/// el archivo de salida parece correcto.
+fn pedir_umbral() -> FlujoResult<u64> {
+    loop {
+        let texto = app_shell::pedir_texto(&format!(
+            "Umbral de publicaciones a fragmentar (Enter = {UMBRAL_POR_DEFECTO}):"
+        ))?
+        .unwrap_or_default();
+        if texto.is_empty() {
+            return Ok(UMBRAL_POR_DEFECTO);
+        }
+        // Se toleran los separadores con los que un humano escribe "9.000" o
+        // "9,000": rechazarlos sería exigirle un formato que no aporta nada.
+        let limpio: String = texto.chars().filter(|c| !matches!(c, '.' | ',' | ' ')).collect();
+        match limpio.parse::<u64>() {
+            Ok(n) if n >= 1 => return Ok(n),
+            _ => app_shell::warn("Escribe un número entero mayor que 0."),
+        }
+    }
+}
+
+fn fragmentar_enlaces() -> AppResult<()> {
+    app_shell::mostrar_subcabecera("Fragmentar enlaces de tienda de eBay por rango de precio");
+
+    let entrada = app_shell::ruta_entrada();
+    let disponibles = app_shell::listar_xlsx(&entrada).unwrap_or_default();
+    if disponibles.is_empty() {
+        app_shell::error(&format!("No se encontraron archivos .xlsx en '{}'.", entrada.display()));
+        return Ok(());
+    }
+    let Some(archivo) = app_shell::elegir_archivo("Archivo a fragmentar:", disponibles)? else {
+        app_shell::info("Hasta luego.");
+        return Ok(());
+    };
+
+    let umbral = pedir_umbral()?;
+    app_shell::info(&format!(
+        "Se fragmentarán las tiendas con {umbral} publicaciones o más, en todas las hojas del archivo."
+    ));
+
+    let nombre_texto =
+        app_shell::pedir_texto("Nombre del archivo de salida (Enter = 'fragmentado'):")?.unwrap_or_default();
+    let nombre_salida = if nombre_texto.is_empty() {
+        "fragmentado".to_string()
+    } else {
+        nombre_texto
+    };
+
+    let (destino, resumen) = fragmentar_archivo(
+        &OpcionesFragmentar {
+            archivo: &archivo,
+            umbral,
+            nombre_salida: &nombre_salida,
+            ruta_salida: &app_shell::ruta_salida(),
+        },
+        app_shell::warn,
+    )?;
+
+    app_shell::success(&format!(
+        "Listo: {} tiendas fragmentadas en {} enlaces. {} filas de entrada → {} de salida, en '{}'.",
+        resumen.tiendas_fragmentadas,
+        resumen.filas_generadas,
+        resumen.filas_entrada,
+        resumen.filas_salida,
+        destino.file_name().unwrap_or_default().to_string_lossy()
+    ));
+
+    // Estas dos líneas se imprimen SIEMPRE, incluso valiendo cero. Antes solo
+    // aparecían si había algo que decir, y entonces el silencio era ambiguo:
+    // no se distinguía "no hubo ningún error" de "esto no revisa errores".
+    // Que el informe afirme "0 errores" es justamente la información que se
+    // quería.
+    app_shell::info(&format!(
+        "Sin fragmentar: {} filas por debajo del umbral ({umbral} publicaciones). No son un error.",
+        resumen.filas_bajo_umbral
+    ));
+    if resumen.errores() == 0 {
+        app_shell::info("Errores: 0. Todas las tiendas que llegaban al umbral se fragmentaron.");
+    } else {
+        // Una tienda que se quedó sin tramos es trabajo que el scraper no va
+        // a hacer, y enterarse al final de la corrida de Web Scraper Cloud
+        // sale mucho más caro que leerlo acá.
+        app_shell::warn(&format!(
+            "Errores: {} filas llegaban al umbral y quedaron SIN fragmentar.",
+            resumen.errores()
+        ));
+        if resumen.enlaces_invalidos > 0 {
+            app_shell::warn(&format!(
+                "  · {} con un enlace que no se pudo fragmentar.",
+                resumen.enlaces_invalidos
+            ));
+        }
+        if resumen.publicaciones_ilegibles > 0 {
+            app_shell::warn(&format!(
+                "  · {} con un valor no numérico en '{}'.",
+                resumen.publicaciones_ilegibles,
+                data_combinator::fragmentar_ebay::COLUMNA_PUBLICACIONES
+            ));
+        }
+    }
+    if resumen.hojas_sin_columnas > 0 {
+        app_shell::warn(&format!(
+            "{} hojas se copiaron sin cambios por no tener las dos columnas obligatorias.",
+            resumen.hojas_sin_columnas
+        ));
+    }
+    Ok(())
+}
+
+/// Qué hace esta corrida. El menú devuelve la variante por VALOR (nunca el
+/// texto mostrado) para que renombrar una etiqueta no pueda cambiar en
+/// silencio qué modo se ejecuta.
+#[derive(Clone, Copy)]
+enum Modo {
+    Combinar,
+    FragmentarEbay,
+}
+
+impl fmt::Display for Modo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Modo::Combinar => write!(f, "Combinar varios archivos en uno"),
+            Modo::FragmentarEbay => {
+                write!(f, "Fragmentar enlaces de tienda de eBay por rango de precio")
+            }
+        }
+    }
+}
+
+fn ejecutar() -> AppResult<()> {
+    app_shell::mostrar_cabecera("DATA COMBINATOR");
+    let Some(modo) = app_shell::menu_seleccionar_nav("¿Qué querés hacer?", vec![Modo::Combinar, Modo::FragmentarEbay])?
+    else {
+        app_shell::info("Hasta luego.");
+        return Ok(());
+    };
+    match modo {
+        Modo::Combinar => combinar_archivos(),
+        Modo::FragmentarEbay => fragmentar_enlaces(),
+    }
 }
 
 fn main() {
